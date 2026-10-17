@@ -38,7 +38,13 @@ fn first_diff(a: &str, b: &str) -> String {
 pub fn run_case(c: &Value) -> Result<(), String> {
     let config = match tailwindcss_v3::Config::from_json(c["config"].clone()) {
         Ok(c) => c,
-        Err(e) => return Err(format!("config error: {e}")),
+        Err(e) => {
+            // tailwind reports config problems when it runs
+            return match c["expected"].get("error") {
+                Some(w) if w["message"].as_str() == Some(e.message.as_str()) => Ok(()),
+                _ => Err(format!("config error: {e}")),
+            };
+        }
     };
     let blocks = c["blocks"].as_str().unwrap_or("");
     let candidates: Vec<&str> = c["candidates"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
@@ -92,4 +98,50 @@ fn conformance() {
         eprintln!("{s}");
     }
     assert_eq!(total_failed, 0, "conformance failures");
+}
+
+/// The local production corpus (account data is not committed; see tools/extract-corpus.mjs
+/// and tools/gen-fixtures-local.mjs). Skipped when absent. `ONLY=substring` filters cases.
+#[test]
+fn conformance_local() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let corpus_path = format!("{root}/tests/corpus-local/accounts.json");
+    let Ok(text) = std::fs::read_to_string(&corpus_path) else {
+        eprintln!("no local corpus");
+        return;
+    };
+    let corpus: Value = serde_json::from_str(&text).unwrap();
+    let cases = corpus["cases"].as_array().unwrap();
+    let show: usize = std::env::var("SHOW").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let only = std::env::var("ONLY").ok();
+    let mut checked = 0;
+    let mut failed = 0;
+    let mut slowest: Vec<(std::time::Duration, String)> = Vec::new();
+    for (i, c) in cases.iter().enumerate() {
+        let name = c["name"].as_str().unwrap();
+        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+            continue;
+        }
+        let Ok(fx) = std::fs::read_to_string(format!("{root}/tests/fixtures-local/accounts/{i}.json")) else { continue };
+        let fx: Value = serde_json::from_str(&fx).unwrap();
+        let mut case = c.clone();
+        case["candidates"] = corpus["candidates"][c["account"].as_str().unwrap()].clone();
+        case["expected"] = fx["expected"].clone();
+        let t = std::time::Instant::now();
+        let r = run_case(&case);
+        slowest.push((t.elapsed(), name.to_string()));
+        checked += 1;
+        if let Err(e) = r {
+            if failed < show {
+                eprintln!("--- {name}: {e}");
+            }
+            failed += 1;
+        }
+    }
+    slowest.sort_by(|a, b| b.0.cmp(&a.0));
+    for (t, n) in slowest.iter().take(3) {
+        eprintln!("slow: {t:?} {n}");
+    }
+    eprintln!("local: {}/{} passed", checked - failed, checked);
+    assert_eq!(failed, 0);
 }

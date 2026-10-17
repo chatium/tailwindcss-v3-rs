@@ -27,6 +27,10 @@ pub const INPUT_PREFIX: &str = "@tailwind base;@tailwind components;@tailwind ut
 #[derive(Clone)]
 pub struct Config {
     inner: Arc<tw::TwConfig>,
+    /// `{ config: {...} }`: tailwind then uses the inner object as the whole config, so the
+    /// bundle's own `content` (the DOM classes) is dropped and the inner `content` raw strings
+    /// are scanned with the default extractor instead.
+    content_candidates: Option<Arc<Vec<String>>>,
 }
 
 /// An error as tailwind/postcss reports it.
@@ -89,6 +93,47 @@ impl Config {
         if !user.is_object() && !user.is_nullish() {
             return Err(CssError::plain("tailwind.config must be an object").into());
         }
+        // `tailwindcss(configOrPath)` with `{ config: … }`
+        match user.get("config") {
+            js::Value::Str(_) => {
+                // a config path: the browser build's `path` shim has no `dirname`
+                return Err(Error {
+                    name: "TypeError".into(),
+                    reason: "me.dirname is not a function".into(),
+                    message: "me.dirname is not a function".into(),
+                    line: None,
+                    column: None,
+                    end_line: None,
+                    end_column: None,
+                });
+            }
+            inner @ js::Value::Obj(_) => {
+                let resolved = tw::config::resolve_config(&inner);
+                let tw = tw::TwConfig::new(resolved);
+                let mut cands = Vec::new();
+                let extractor = extractor::Extractor::new(&tw.separator, &tw.prefix);
+                let content = inner.get("content");
+                let files = match &content {
+                    js::Value::Arr(_) => content.clone(),
+                    js::Value::Obj(_) => content.get("files"),
+                    _ => js::Value::Undefined,
+                };
+                for f in files.as_arr().unwrap_or(&[]) {
+                    if let js::Value::Str(raw) = f.get("raw") {
+                        let ext = f.get("extension");
+                        let text = if ext == js::Value::str("svelte") { svelte_transform(&raw) } else { raw.to_string() };
+                        for c in extractor.extract(&text) {
+                            cands.push(c.to_string());
+                        }
+                    }
+                }
+                if tw.separator == "-" {
+                    return Err(separator_error());
+                }
+                return Ok(Config { inner: Arc::new(tw), content_candidates: Some(Arc::new(cands)) });
+            }
+            _ => {}
+        }
         // `{ ...window.tailwind.config, _hash, content: {...}, plugins: [...] }`
         let mut cfg = match &user {
             js::Value::Obj(o) => (**o).clone(),
@@ -106,12 +151,9 @@ impl Config {
         let resolved = tw::config::resolve_config(&cfg.into_value());
         let inner = tw::TwConfig::new(resolved);
         if inner.separator == "-" {
-            return Err(CssError::plain(
-                "The '-' character cannot be used as a custom separator in JIT mode due to parsing ambiguity. Please use another character like '_' instead.",
-            )
-            .into());
+            return Err(separator_error());
         }
-        Ok(Config { inner: Arc::new(inner) })
+        Ok(Config { inner: Arc::new(inner), content_candidates: None })
     }
 
     pub fn default_config() -> Config {
@@ -134,7 +176,10 @@ pub fn generate<'a>(config: &Config, blocks: &str, candidates: impl IntoIterator
     let cfg = &*config.inner;
     let mut ctx = tw::context::Context::new(cfg);
     let root = postcss::parse(&mut ctx.css, &input)?;
-    tw::process::process_tailwind_features(&mut ctx, root, candidates)?;
+    match &config.content_candidates {
+        Some(c) => tw::process::process_tailwind_features(&mut ctx, root, c.iter().map(|s| s.as_str()))?,
+        None => tw::process::process_tailwind_features(&mut ctx, root, candidates)?,
+    }
     autoprefixer::autoprefix(&mut ctx.css, root)?;
     Ok(postcss::to_string(&mut ctx.css, root))
 }
@@ -153,4 +198,33 @@ impl Config {
         }
         extractor::Extractor::new(&self.inner.separator, &self.inner.prefix).extract(source)
     }
+}
+
+fn separator_error() -> Error {
+    CssError::plain(
+        "The '-' character cannot be used as a custom separator in JIT mode due to parsing ambiguity. Please use another character like '_' instead.",
+    )
+    .into()
+}
+
+/// `builtInTransformers.svelte`: `content.replace(/(?:^|\s)class:/g, ' ')`
+fn svelte_transform(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    let mut at_start = true;
+    while let Some(i) = rest.find("class:") {
+        let before = &rest[..i];
+        let prev = before.chars().last();
+        if (i == 0 && at_start) || prev.is_some_and(js::is_js_whitespace) {
+            let cut = if i == 0 { 0 } else { i - prev.unwrap().len_utf8() };
+            out.push_str(&rest[..cut]);
+            out.push(' ');
+        } else {
+            out.push_str(&rest[..i + "class:".len()]);
+        }
+        rest = &rest[i + "class:".len()..];
+        at_start = false;
+    }
+    out.push_str(rest);
+    out
 }

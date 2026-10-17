@@ -1,3 +1,5 @@
 target/
 tools/node_modules/
 tools/upstream/
+tests/corpus-local/
+tests/fixtures-local/
