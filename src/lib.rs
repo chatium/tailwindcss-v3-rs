@@ -6,6 +6,7 @@
 //! let css = tailwindcss_v3::generate(&config, "", ["flex", "md:px-2"]).unwrap();
 //! ```
 
+pub mod autoprefixer;
 pub mod js;
 pub mod postcss;
 pub mod selector;
@@ -132,5 +133,6 @@ pub fn generate<'a>(config: &Config, blocks: &str, candidates: impl IntoIterator
     let mut ctx = tw::context::Context::new(cfg);
     let root = postcss::parse(&mut ctx.css, &input)?;
     tw::process::process_tailwind_features(&mut ctx, root, candidates)?;
+    autoprefixer::autoprefix(&mut ctx.css, root)?;
     Ok(postcss::to_string(&mut ctx.css, root))
 }

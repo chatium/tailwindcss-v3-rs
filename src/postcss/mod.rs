@@ -203,8 +203,14 @@ pub struct Node {
     /// autoprefixer's `_autoprefixerDisabled` / `_autoprefixerSelfDisabled`
     pub ap_disabled: Option<bool>,
     pub ap_self_disabled: bool,
-    pub ap_prefixed: bool,
-    pub ap_cascade: Option<bool>,
+    /// `_autoprefixerCascade` (only truthy values stick)
+    pub ap_cascade: bool,
+    /// `_autoprefixerPrefix`: None = not computed, Some(None) = false
+    pub ap_prefix: Option<Option<String>>,
+    /// `_autoprefixerMax`
+    pub ap_max: Option<usize>,
+    /// `_autoprefixerValues`
+    pub ap_values: Option<Vec<(String, String)>>,
 }
 
 impl Node {
@@ -227,8 +233,10 @@ impl Node {
             raw_cache: None,
             ap_disabled: None,
             ap_self_disabled: false,
-            ap_prefixed: false,
-            ap_cascade: None,
+            ap_cascade: false,
+            ap_prefix: None,
+            ap_max: None,
+            ap_values: None,
         }
     }
 

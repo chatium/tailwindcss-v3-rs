@@ -25,8 +25,18 @@ fn le32(c: Option<u8>) -> bool {
     matches!(c, Some(c) if c <= 32)
 }
 
-/// `parse(input)`
+/// `parse(input)` — tailwind's fork (`/` and `*` are operators inside any function)
 pub fn parse(input: &str) -> Vec<VNode> {
+    parse_impl(input, false)
+}
+
+/// The original `postcss-value-parser@4.2.0` (operators only inside `calc()`), as autoprefixer
+/// uses it
+pub fn parse_original(input: &str) -> Vec<VNode> {
+    parse_impl(input, true)
+}
+
+fn parse_impl(input: &str, original: bool) -> Vec<VNode> {
     let mut value = input.to_string();
     let max = input.len();
     // stack of open function frames: (token without nodes, parent nodes)
@@ -47,7 +57,10 @@ pub fn parse(input: &str) -> Vec<VNode> {
 
     while pos < max {
         let b = value.as_bytes();
-        let in_function = balanced > 0;
+        // `parent && parent.type === 'function' && <fork: true | original: parent.value === 'calc'>`
+        let in_function = balanced > 0 && (!original || stack.last().is_some_and(|f| f.value == "calc"));
+        // whitespace before `/`: fork `!parent`; original `!parent || parent.value !== 'calc'`
+        let slash_before_ok = balanced == 0 || (original && stack.last().is_some_and(|f| f.value != "calc"));
         if le32(c) {
             let mut next = pos;
             loop {
@@ -65,7 +78,7 @@ pub fn parse(input: &str) -> Vec<VNode> {
                 if let Some(VNode::Div { after: a, .. }) = tokens.last_mut() {
                     *a = token;
                 }
-            } else if c == Some(b',') || c == Some(b':') || (c == Some(b'/') && code(b, next + 1) != Some(b'*') && !in_function) {
+            } else if c == Some(b',') || c == Some(b':') || (c == Some(b'/') && code(b, next + 1) != Some(b'*') && slash_before_ok) {
                 before = token;
             } else {
                 tokens.push(VNode::Space(token));
