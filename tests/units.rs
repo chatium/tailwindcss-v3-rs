@@ -127,7 +127,10 @@ fn resolve_config() {
         let r = tailwindcss_v3::tw::config::resolve_config(&cfg);
         let mut got = serde_json::Map::new();
         for k in ["theme", "corePlugins", "prefix", "important", "separator", "darkMode"] {
-            got.insert(k.into(), to_json(&r.get(k)));
+            let v = r.get(k);
+            if !v.is_undefined() {
+                got.insert(k.into(), to_json(&v));
+            }
         }
         let got = Value::Object(got);
         if got != c["resolved"] {
