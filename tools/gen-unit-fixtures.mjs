@@ -71,3 +71,23 @@ for (const input of cssInputs) {
 }
 fs.writeFileSync('../tests/fixtures/postcss.json', JSON.stringify(pcOut))
 console.log('postcss', pcOut.length)
+
+// ---- resolveConfig
+const resolveConfig = require('tailwindcss/resolveConfig')
+const configs = [
+  {},
+  { theme: { extend: { colors: { brand: '#123456', primary: { 50: '#eef', DEFAULT: '#00f' } }, spacing: { 128: '32rem' } } } },
+  { theme: { colors: { red: '#f00' }, extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } } },
+  { theme: { screens: { tablet: '640px', laptop: '1024px' }, extend: { maxWidth: { x: '1px' } } } },
+  { prefix: 'tw-', important: true, darkMode: 'class', corePlugins: { preflight: false } },
+  { corePlugins: ['margin', 'padding'] },
+  { presets: [], theme: { spacing: { 1: '1px' } } },
+  { theme: { extend: { boxShadow: { x: ['0 0 1px red', '0 0 2px blue'] }, fontSize: { xl: ['2rem', { lineHeight: '1' }] } } } },
+  { future: { respectDefaultRingColorOpacity: true }, theme: { extend: { borderColor: { DEFAULT: '#ccc' } } } },
+]
+const rcOut = configs.map(c => {
+  const r = resolveConfig({ ...c })
+  return { config: c, resolved: JSON.parse(JSON.stringify({ theme: r.theme, corePlugins: r.corePlugins, prefix: r.prefix, important: r.important, separator: r.separator, darkMode: r.darkMode })) }
+})
+fs.writeFileSync('../tests/fixtures/resolve-config.json', JSON.stringify(rcOut))
+console.log('resolve-config', rcOut.length)

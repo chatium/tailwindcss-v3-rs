@@ -1,0 +1,16 @@
+[
+  {"name": "empty", "config": {}, "blocks": "", "candidates": []},
+  {"name": "simple", "config": {}, "blocks": "", "candidates": ["flex", "md:px-2", "hover:text-red-500", "w-[10px]", "foo"]},
+  {"name": "extend", "config": {"theme": {"extend": {"colors": {"brand": "#123456"}}}}, "blocks": ".btn{@apply px-4 bg-brand}", "candidates": ["text-brand/50", "bg-brand", "border-brand"]},
+  {"name": "apply-error", "config": {}, "blocks": ".btn{@apply foo}", "candidates": []},
+  {"name": "theme-error", "config": {}, "blocks": ".a{color:theme(colors.nope)}", "candidates": []},
+  {"name": "layers", "config": {}, "blocks": "@layer components { .card { padding: 1rem; } } @layer utilities { .x-y { color: red; } }", "candidates": ["card", "x-y", "hover:card", "md:x-y"]},
+  {"name": "quirk-negative-static", "config": {}, "blocks": "", "candidates": ["-flex", "-container", "sm:-flex"]},
+  {"name": "formatted-blocks", "config": {}, "blocks": "\n  .a {\n    color: red;\n  }\n  @media (min-width: 10px) {\n    .b { @apply flex; }\n  }\n", "candidates": ["p-1"]},
+  {"name": "dark-class", "config": {"darkMode": "class"}, "blocks": "", "candidates": ["dark:bg-black", "dark:hover:text-white"]},
+  {"name": "prefix", "config": {"prefix": "tw-"}, "blocks": "", "candidates": ["tw-flex", "hover:tw-p-1", "-tw-mt-1", "tw--mt-2", "flex"]},
+  {"name": "important", "config": {"important": true}, "blocks": "", "candidates": ["flex", "hover:p-1"]},
+  {"name": "important-selector", "config": {"important": "#app"}, "blocks": "", "candidates": ["flex", "hover:p-1", "dark:bg-black"]},
+  {"name": "container", "config": {"theme": {"container": {"center": true, "padding": {"DEFAULT": "1rem", "sm": "2rem"}}}}, "blocks": "", "candidates": ["container", "md:container"]},
+  {"name": "arbitrary", "config": {}, "blocks": "", "candidates": ["[mask-type:luminance]", "bg-[url('/a.png')]", "grid-cols-[1fr_2fr]", "text-[length:12px]", "text-[#fff]", "[&>*]:p-1", "group-hover:underline", "peer-checked:block", "data-[x=y]:flex", "aria-checked:flex", "supports-[display:grid]:grid", "min-[600px]:flex", "max-sm:hidden"]}
+]

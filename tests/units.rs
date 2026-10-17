@@ -104,3 +104,38 @@ fn postcss_roundtrip() {
     }
     report("postcss", cases.len(), failed);
 }
+
+fn to_json(v: &tailwindcss_v3::js::Value) -> Value {
+    use tailwindcss_v3::js::Value as V;
+    match v {
+        V::Undefined | V::Func(_) => Value::Null,
+        V::Null => Value::Null,
+        V::Bool(b) => Value::Bool(*b),
+        V::Num(n) => serde_json::Number::from_f64(*n).map(Value::Number).unwrap_or(Value::Null),
+        V::Str(s) => Value::String(s.to_string()),
+        V::Arr(a) => Value::Array(a.iter().map(to_json).collect()),
+        V::Obj(o) => Value::Object(o.iter().filter(|(_, v)| !v.is_undefined() && !v.is_function()).map(|(k, v)| (k.to_string(), to_json(v))).collect()),
+    }
+}
+
+#[test]
+fn resolve_config() {
+    let cases = load("resolve-config");
+    let mut failed = Vec::new();
+    for c in &cases {
+        let cfg = tailwindcss_v3::js::Value::from_json(&c["config"]);
+        let r = tailwindcss_v3::tw::config::resolve_config(&cfg);
+        let mut got = serde_json::Map::new();
+        for k in ["theme", "corePlugins", "prefix", "important", "separator", "darkMode"] {
+            got.insert(k.into(), to_json(&r.get(k)));
+        }
+        let got = Value::Object(got);
+        if got != c["resolved"] {
+            let g = serde_json::to_string(&got).unwrap();
+            let w = serde_json::to_string(&c["resolved"]).unwrap();
+            let i = g.bytes().zip(w.bytes()).position(|(a, b)| a != b).unwrap_or(0);
+            failed.push(format!("{}: differs at {i}: got ...{}... want ...{}...", c["config"], &g[i.saturating_sub(80)..(i + 80).min(g.len())], &w[i.saturating_sub(80)..(i + 80).min(w.len())]));
+        }
+    }
+    report("resolve-config", cases.len(), failed);
+}

@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+regex = { version = "=1.12.3", default-features = false, features = ["std", "unicode-perl", "perf"] }
 
 [profile.release]
 debug = 1
