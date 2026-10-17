@@ -7,7 +7,9 @@
 //! ```
 
 pub mod autoprefixer;
+pub mod extractor;
 pub mod js;
+pub mod jsregex;
 pub mod postcss;
 pub mod selector;
 pub mod tw;
@@ -135,4 +137,20 @@ pub fn generate<'a>(config: &Config, blocks: &str, candidates: impl IntoIterator
     tw::process::process_tailwind_features(&mut ctx, root, candidates)?;
     autoprefixer::autoprefix(&mut ctx.css, root)?;
     Ok(postcss::to_string(&mut ctx.css, root))
+}
+
+/// Port of tailwind v3's default extractor: class candidates in arbitrary source text (tsx, ts,
+/// vue, html, …), deduplicated, as substrings of `source`.
+pub fn extract_candidates(source: &str) -> Vec<&str> {
+    extractor::extract_candidates(source)
+}
+
+impl Config {
+    /// The default extractor built for this config's `prefix` and `separator`.
+    pub fn extract_candidates<'a>(&self, source: &'a str) -> Vec<&'a str> {
+        if self.inner.prefix.is_empty() && self.inner.separator == ":" {
+            return extractor::extract_candidates(source);
+        }
+        extractor::Extractor::new(&self.inner.separator, &self.inner.prefix).extract(source)
+    }
 }

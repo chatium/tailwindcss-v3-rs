@@ -441,7 +441,7 @@ pub fn string_to_number(s: &str) -> f64 {
     if body == "Infinity" {
         return sign * f64::INFINITY;
     }
-    if t.len() > 2 && !t.starts_with(['-', '+']) {
+    if t.len() > 2 && t.is_char_boundary(2) && !t.starts_with(['-', '+']) {
         let lower = &t[..2];
         let radix = match lower {
             "0x" | "0X" => 16,
