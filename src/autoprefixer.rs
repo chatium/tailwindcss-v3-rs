@@ -76,7 +76,6 @@ enum ValueKind {
 }
 
 struct DeclPrefixer {
-    name: String,
     prefixes: Vec<String>,
     kind: DeclKind,
 }
@@ -241,7 +240,7 @@ fn data() -> &'static Data {
                 }
                 None => {
                     let prefixes: Vec<String> = f.add.clone();
-                    let d = DeclPrefixer { name: f.name.clone(), prefixes, kind: decl_kind(&f.name) };
+                    let d = DeclPrefixer { prefixes, kind: decl_kind(&f.name) };
                     match decls.iter_mut().find(|(k, _)| *k == f.name) {
                         Some(e) => e.1 = d,
                         None => decls.push((f.name.clone(), d)),

@@ -705,8 +705,7 @@ fn match_arbitrary_variant(v: &str) -> Option<(char, String, String, usize)> {
         if matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
             continue;
         }
-        let mut j = k + 1;
-        let mut sep = String::new();
+        let j = k + 1;
         let try_at = |j: usize, sep: &str| -> Option<(char, String, String, usize)> {
             if chars.get(j).map(|x| x.1) != Some('[') {
                 return None;
@@ -726,8 +725,6 @@ fn match_arbitrary_variant(v: &str) -> Option<(char, String, String, usize)> {
         if let Some(r) = try_at(j, "") {
             return Some(r);
         }
-        j += 0;
-        sep.clear();
     }
     None
 }

@@ -288,7 +288,6 @@ impl Flow {
 #[derive(Default)]
 pub struct Css {
     pub nodes: Vec<Node>,
-    next_iterator: u32,
 }
 
 impl std::ops::Index<NodeId> for Css {
@@ -305,7 +304,7 @@ impl std::ops::IndexMut<NodeId> for Css {
 
 impl Css {
     pub fn new() -> Css {
-        Css { nodes: Vec::with_capacity(1024), next_iterator: 0 }
+        Css { nodes: Vec::with_capacity(1024) }
     }
 
     pub fn add(&mut self, node: Node) -> NodeId {
