@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": { "tailwindcss": "3.4.16", "postcss": "8.4.49", "autoprefixer": "10.4.20" },
+  "overrides": { "postcss-selector-parser": "6.1.2", "postcss-js": "4.0.1", "postcss-nested": "6.2.0" }
+}

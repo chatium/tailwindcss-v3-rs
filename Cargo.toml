@@ -1,0 +1,15 @@
+[package]
+name = "tailwindcss-v3"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Rust port of the Tailwind CSS v3.4.16 compiler (byte-identical to the Play CDN bundle)"
+repository = "https://github.com/chatium/tailwindcss-v3-rs"
+publish = false
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+
+[profile.release]
+debug = 1
