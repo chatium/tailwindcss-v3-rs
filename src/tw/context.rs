@@ -291,7 +291,8 @@ impl<'c> Context<'c> {
     }
 }
 
-const NOT_ON_DEMAND: &str = "*";
+/// `sharedState.NOT_ON_DEMAND` is `new String('*')`: a Map key distinct from the string `'*'`
+pub const NOT_ON_DEMAND: &str = "\u{0}*";
 
 /// `getClasses(selector, ignoreNot)`
 fn get_classes(selector: &str) -> Result<Vec<String>, String> {

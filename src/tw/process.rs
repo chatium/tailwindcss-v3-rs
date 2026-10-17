@@ -286,9 +286,10 @@ pub fn candidates_from_tokens<'a>(tokens: impl IntoIterator<Item = &'a str>, saf
     content.push(joined);
     content.extend(safelist.iter().cloned());
     let mut seen_lines: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut set: Vec<String> = vec!["*".to_string()];
+    let not_on_demand = super::context::NOT_ON_DEMAND;
+    let mut set: Vec<String> = vec![not_on_demand.to_string()];
     let mut in_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    in_set.insert("*".into());
+    in_set.insert(not_on_demand.into());
     for c in content {
         for line in c.split('\n') {
             let line = crate::js::trim(line).to_string();
@@ -305,7 +306,20 @@ pub fn candidates_from_tokens<'a>(tokens: impl IntoIterator<Item = &'a str>, saf
             }
         }
     }
-    set.sort_by(|a, b| crate::js::cmp_utf16(a, b));
+    // the String object compares as '*' (and never equal to the primitive)
+    let key = |s: &String| if s == not_on_demand { "*".to_string() } else { s.clone() };
+    crate::js::sort_by(&mut set, |a, b| {
+        let (x, y) = (key(a), key(b));
+        if a == b {
+            0
+        } else if x < y && crate::js::cmp_utf16(&x, &y).is_lt() {
+            -1
+        } else if crate::js::cmp_utf16(&x, &y).is_lt() {
+            -1
+        } else {
+            1
+        }
+    });
     set
 }
 

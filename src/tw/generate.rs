@@ -13,7 +13,8 @@ use super::offsets::{Layer, RuleOffset, SortValue, VariantOption};
 use super::plugin_utils::get_matching_types;
 use super::util::{as_class, is_syntactically_valid_property_value, normalize, split_at_top_level_only};
 
-const NOT_ON_DEMAND: &str = "*";
+/// `sharedState.NOT_ON_DEMAND` is `new String('*')`: a Map key distinct from the string `'*'`
+pub const NOT_ON_DEMAND: &str = "\u{0}*";
 
 fn is_arbitrary_value(s: &str) -> bool {
     s.starts_with('[') && s.ends_with(']')
