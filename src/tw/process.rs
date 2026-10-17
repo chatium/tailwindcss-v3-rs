@@ -279,47 +279,73 @@ fn clone_nodes(ctx: &mut Context, nodes: &[NodeId], source: Option<Source>, laye
 }
 
 /// Candidates the way the Play bundle sees them: the class list joined with spaces, then
-/// the `html` extractor (`split(' ')`) per trimmed line.
+/// the `html` extractor (`split(' ')`) per trimmed line, deduplicated, plus the non-on-demand
+/// key, sorted like JS strings.
 pub fn candidates_from_tokens<'a>(tokens: impl IntoIterator<Item = &'a str>, safelist: &[String]) -> Vec<String> {
-    let mut content: Vec<String> = Vec::new();
-    let joined = tokens.into_iter().collect::<Vec<_>>().join(" ");
-    content.push(joined);
-    content.extend(safelist.iter().cloned());
-    let mut seen_lines: std::collections::HashSet<String> = std::collections::HashSet::new();
     let not_on_demand = super::context::NOT_ON_DEMAND;
     let mut set: Vec<String> = vec![not_on_demand.to_string()];
-    let mut in_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    in_set.insert(not_on_demand.into());
-    for c in content {
+    let mut in_set: crate::js::FxHashSet<String> = Default::default();
+    let mut add = |tok: &str, set: &mut Vec<String>| {
+        if tok != "!*" && !in_set.contains(tok) {
+            in_set.insert(tok.to_string());
+            set.push(tok.to_string());
+        }
+    };
+    let tokens: Vec<&str> = tokens.into_iter().collect();
+    let simple = tokens.iter().all(|t| !t.contains('\n') && !t.contains(|c: char| c != ' ' && crate::js::is_js_whitespace(c)));
+    let mut seen_lines: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if simple {
+        // one line: `join(' ')`, trim, `split(' ')` — only the outer spaces disappear
+        let n = tokens.len();
+        let first_nonempty = tokens.iter().position(|t| !t.trim_matches(' ').is_empty());
+        let last_nonempty = tokens.iter().rposition(|t| !t.trim_matches(' ').is_empty());
+        match (first_nonempty, last_nonempty) {
+            (Some(f), Some(l)) => {
+                let mut line_parts: Vec<&str> = Vec::new();
+                for (i, t) in tokens.iter().enumerate().take(l + 1).skip(f) {
+                    let mut t: &str = t;
+                    if i == f {
+                        t = t.trim_start_matches(' ');
+                    }
+                    if i == l {
+                        t = t.trim_end_matches(' ');
+                    }
+                    line_parts.push(t);
+                }
+                let _ = n;
+                for part in line_parts.join(" ").split(' ') {
+                    add(part, &mut set);
+                }
+            }
+            _ => add("", &mut set),
+        }
+    } else {
+        for line in tokens.join(" ").split('\n') {
+            let line = crate::js::trim(line).to_string();
+            if !seen_lines.insert(line.clone()) {
+                continue;
+            }
+            for tok in line.split(' ') {
+                add(tok, &mut set);
+            }
+        }
+    }
+    for c in safelist {
         for line in c.split('\n') {
             let line = crate::js::trim(line).to_string();
             if !seen_lines.insert(line.clone()) {
                 continue;
             }
             for tok in line.split(' ') {
-                if tok == "!*" {
-                    continue;
-                }
-                if in_set.insert(tok.to_string()) {
-                    set.push(tok.to_string());
-                }
+                add(tok, &mut set);
             }
         }
     }
-    // the String object compares as '*' (and never equal to the primitive)
-    let key = |s: &String| if s == not_on_demand { "*".to_string() } else { s.clone() };
-    crate::js::sort_by(&mut set, |a, b| {
-        let (x, y) = (key(a), key(b));
-        if a == b {
-            0
-        } else if x < y && crate::js::cmp_utf16(&x, &y).is_lt() {
-            -1
-        } else if crate::js::cmp_utf16(&x, &y).is_lt() {
-            -1
-        } else {
-            1
-        }
-    });
+    // the String object compares as '*' and is never equal to the primitive
+    fn key(s: &str) -> &str {
+        if s == super::context::NOT_ON_DEMAND { "*" } else { s }
+    }
+    set.sort_by(|a, b| crate::js::cmp_utf16(key(a), key(b)));
     set
 }
 

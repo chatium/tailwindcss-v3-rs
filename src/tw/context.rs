@@ -1,6 +1,6 @@
 //! `lib/setupContextUtils.js`: the context, the plugin API and plugin registration.
 
-use std::collections::{HashMap, HashSet};
+use crate::js::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
 use crate::js::{Object, Value};
@@ -267,15 +267,15 @@ impl<'c> Context<'c> {
         Context {
             css: Css::new(),
             cfg,
-            candidate_rule_map: HashMap::new(),
-            variant_map: HashMap::new(),
-            variant_options: HashMap::new(),
+            candidate_rule_map: HashMap::default(),
+            variant_map: HashMap::default(),
+            variant_options: HashMap::default(),
             offsets: Offsets::new(),
-            class_cache: HashMap::new(),
-            not_class_cache: cfg.blocklist.iter().cloned().collect(),
-            candidate_rule_cache: HashMap::new(),
+            class_cache: HashMap::default(),
+            not_class_cache: cfg.blocklist.iter().cloned().collect::<HashSet<String>>(),
+            candidate_rule_cache: HashMap::default(),
             rule_cache: Vec::new(),
-            apply_class_cache: HashMap::new(),
+            apply_class_cache: HashMap::default(),
             changed_content: Vec::new(),
             variant_identifier: 0,
             errors: Vec::new(),

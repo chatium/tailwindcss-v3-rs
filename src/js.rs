@@ -591,13 +591,57 @@ pub fn is_word_char(c: char) -> bool {
 
 /// JS string comparison `a < b` (UTF-16 code unit order).
 pub fn cmp_utf16(a: &str, b: &str) -> std::cmp::Ordering {
-    // Code point order equals UTF-16 order except for BMP chars above the surrogate range vs
-    // supplementary chars; fall back to a UTF-16 walk only when needed.
-    if a.is_ascii() || b.is_ascii() {
-        return a.cmp(b);
+    // UTF-8 byte order is code point order; UTF-16 order differs only between a supplementary
+    // character and a BMP character at or above U+E000, so compare the first differing chars
+    let (ab, bb) = (a.as_bytes(), b.as_bytes());
+    let mut i = 0;
+    let n = ab.len().min(bb.len());
+    while i < n && ab[i] == bb[i] {
+        i += 1;
     }
-    a.encode_utf16().cmp(b.encode_utf16())
+    if i == n {
+        return ab.len().cmp(&bb.len());
+    }
+    while !a.is_char_boundary(i) {
+        i -= 1;
+    }
+    let ca = a[i..].chars().next().unwrap();
+    let cb = b[i..].chars().next().unwrap();
+    let unit = |c: char| -> u32 {
+        let c = c as u32;
+        if c >= 0x10000 { 0xD800 + ((c - 0x10000) >> 10) } else { c }
+    };
+    match unit(ca).cmp(&unit(cb)) {
+        std::cmp::Ordering::Equal => (ca as u32).cmp(&(cb as u32)),
+        o => o,
+    }
 }
+
+/// A fast non-cryptographic hasher (FxHash) for the string-keyed maps on hot paths.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x517cc1b727220a95;
+        let mut h = self.0;
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            h = (h.rotate_left(5) ^ u64::from_le_bytes(c.try_into().unwrap())).wrapping_mul(K);
+        }
+        for &b in chunks.remainder() {
+            h = (h.rotate_left(5) ^ b as u64).wrapping_mul(K);
+        }
+        self.0 = h;
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type FxBuild = std::hash::BuildHasherDefault<FxHasher>;
+pub type FxHashMap<K, V> = std::collections::HashMap<K, V, FxBuild>;
+pub type FxHashSet<K> = std::collections::HashSet<K, FxBuild>;
 
 /// UTF-16 length of a string
 pub fn utf16_len(s: &str) -> usize {
