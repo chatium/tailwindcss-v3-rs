@@ -164,3 +164,9 @@ fn extractor_scan_fuzz() {
         assert_eq!(extractor.extract(&s), extractor.extract_reference(&s), "{s:?}");
     }
 }
+
+#[test]
+fn candidates_with_class() {
+    let c = tailwindcss_v3::Candidates::new(["card", "md:card", "hover:!-card", "[&_p]:card", "card-lg", "md:flex", "x-card"]);
+    assert_eq!(c.with_class("card"), ["[&_p]:card", "card", "hover:!-card", "md:card"]);
+}

@@ -91,6 +91,25 @@ impl Candidates {
         self.list.is_empty()
     }
 
+    /// Candidates whose class part (separator `:`, without variants, `!` and a leading `-`) is
+    /// `class`: `textarea-field`, `md:textarea-field`, `hover:!-textarea-field`, …
+    pub fn with_class(&self, class: &str) -> Vec<&str> {
+        let mut out: Vec<u32> = Vec::new();
+        for key in [class.to_string(), format!("-{class}")] {
+            let h = hash(&key);
+            let start = self.by_class.partition_point(|&(x, _)| x < h);
+            out.extend(
+                self.by_class[start..]
+                    .iter()
+                    .take_while(|&&(x, _)| x == h)
+                    .map(|&(_, i)| i)
+                    .filter(|&i| class_part(&self.list[i as usize], ":") == key),
+            );
+        }
+        out.sort_unstable();
+        out.into_iter().map(|i| &*self.list[i as usize]).collect()
+    }
+
     /// Candidates that can produce a rule in some config (without blocks).
     pub fn viable_len(&self) -> usize {
         self.viable.len()
