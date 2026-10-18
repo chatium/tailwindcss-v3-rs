@@ -49,6 +49,92 @@ fn hash(s: &str) -> u64 {
     h.finish()
 }
 
+/// A token that `candidates_from_tokens` passes through unchanged.
+fn is_simple(t: &str) -> bool {
+    !t.is_empty() && !t.chars().any(crate::js::is_js_whitespace)
+}
+
+const RUN_MARKER: &str = "\u{1}";
+
+/// What `candidates_from_tokens` makes of the non-simple tokens: they depend on their neighbours
+/// only through whether a non-whitespace token is next to them, so every run of simple tokens is
+/// replaced by a marker. `None` when the marker could be ambiguous.
+fn pieces_of_complex(tokens: &[&str]) -> Option<Vec<String>> {
+    if tokens.is_empty() {
+        // `''.split('\n')` is one empty line
+        return Some(vec![String::new()]);
+    }
+    if tokens.iter().all(|t| is_simple(t)) {
+        return Some(Vec::new());
+    }
+    let mut reduced: Vec<&str> = Vec::new();
+    for t in tokens {
+        if is_simple(t) {
+            if reduced.last() != Some(&RUN_MARKER) {
+                reduced.push(RUN_MARKER);
+            }
+        } else if t.contains(RUN_MARKER) {
+            return None;
+        } else {
+            reduced.push(t);
+        }
+    }
+    let not_on_demand = crate::tw::context::NOT_ON_DEMAND;
+    Some(process::candidates_from_tokens(reduced, &[]).into_iter().filter(|c| c != not_on_demand && c != RUN_MARKER).collect())
+}
+
+/// `f` over contiguous chunks of `items` on up to `n` threads, results in chunk order.
+fn par_chunks<'s, T: Sync, R: Send>(items: &'s [T], n: usize, f: impl Fn(&'s [T]) -> R + Sync) -> Vec<R> {
+    let chunk = items.len().div_ceil(n).max(1);
+    std::thread::scope(|s| {
+        let f = &f;
+        let hs: Vec<_> = items.chunks(chunk).map(|part| s.spawn(move || f(part))).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
+fn threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16)
+}
+
+/// Merges sorted, deduplicated runs into one sorted, deduplicated list.
+fn merge_sorted(mut runs: Vec<Vec<&str>>) -> Vec<&str> {
+    while runs.len() > 1 {
+        let mut next = Vec::with_capacity(runs.len().div_ceil(2));
+        let mut it = runs.into_iter();
+        while let Some(a) = it.next() {
+            let Some(b) = it.next() else {
+                next.push(a);
+                break;
+            };
+            let mut out = Vec::with_capacity(a.len() + b.len());
+            let (mut i, mut j) = (0, 0);
+            while i < a.len() && j < b.len() {
+                match crate::js::cmp_utf16(a[i], b[j]) {
+                    std::cmp::Ordering::Less => {
+                        out.push(a[i]);
+                        i += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        out.push(b[j]);
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        out.push(a[i]);
+                        i += 1;
+                        j += 1;
+                    }
+                }
+            }
+            out.extend_from_slice(&a[i..]);
+            out.extend_from_slice(&b[j..]);
+            next.push(out);
+        }
+        runs = next;
+    }
+    runs.pop().unwrap_or_default()
+}
+
 fn class_index(list: &[Box<str>], separator: &str) -> Vec<(u64, u32)> {
     let mut v: Vec<(u64, u32)> = list.iter().enumerate().map(|(i, c)| (hash(class_part(c, separator)), i as u32)).collect();
     v.sort_unstable();
@@ -71,20 +157,72 @@ fn default_keys() -> &'static FxHashSet<String> {
 impl Candidates {
     /// Class names as `generate` takes them (order and duplicates do not matter).
     pub fn new<'a>(candidates: impl IntoIterator<Item = &'a str>) -> Candidates {
-        let not_on_demand = crate::tw::context::NOT_ON_DEMAND;
-        let list: Vec<Box<str>> = process::candidates_from_tokens(candidates, &[])
-            .into_iter()
-            .filter(|c| c != not_on_demand)
-            .map(String::into_boxed_str)
-            .collect();
+        let tokens: Vec<&str> = candidates.into_iter().collect();
+        let n = threads();
+        let list: Vec<Box<str>> = match pieces_of_complex(&tokens) {
+            Some(extra) => {
+                let runs = par_chunks(&tokens, n, |part| {
+                    let mut v: Vec<&str> = part.iter().copied().filter(|t| is_simple(t) && *t != "!*").collect();
+                    v.sort_unstable_by(|a, b| crate::js::cmp_utf16(a, b));
+                    v.dedup();
+                    v
+                });
+                let mut extra: Vec<&str> = extra.iter().map(|s| s.as_str()).collect();
+                extra.sort_unstable_by(|a, b| crate::js::cmp_utf16(a, b));
+                extra.dedup();
+                let mut runs = runs;
+                runs.push(extra);
+                let merged = merge_sorted(runs);
+                par_chunks(&merged, n, |part| part.iter().map(|&s| Box::from(s)).collect::<Vec<Box<str>>>()).into_iter().flatten().collect()
+            }
+            None => {
+                let not_on_demand = crate::tw::context::NOT_ON_DEMAND;
+                process::candidates_from_tokens(tokens, &[]).into_iter().filter(|c| c != not_on_demand).map(String::into_boxed_str).collect()
+            }
+        };
         let keys = default_keys();
-        let viable = (0..list.len() as u32).filter(|&i| has_plugins(class_part(&list[i as usize], ":"), "", |k| keys.contains(k))).collect();
-        let by_class = class_index(&list, ":");
+        let (viable, mut by_class): (Vec<u32>, Vec<(u64, u32)>) = {
+            let chunk = list.len().div_ceil(n).max(1);
+            let parts: Vec<(Vec<u32>, Vec<(u64, u32)>)> = std::thread::scope(|s| {
+                let hs: Vec<_> = (0..list.len())
+                    .step_by(chunk)
+                    .map(|start| {
+                        let list = &list;
+                        s.spawn(move || {
+                            let mut viable = Vec::new();
+                            let mut index = Vec::new();
+                            for i in start..(start + chunk).min(list.len()) {
+                                let class = class_part(&list[i], ":");
+                                if has_plugins(class, "", |k| keys.contains(k)) {
+                                    viable.push(i as u32);
+                                }
+                                index.push((hash(class), i as u32));
+                            }
+                            (viable, index)
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let mut viable = Vec::new();
+            let mut index = Vec::new();
+            for (v, ix) in parts {
+                viable.extend(v);
+                index.extend(ix);
+            }
+            (viable, index)
+        };
+        by_class.sort_unstable();
         Candidates { list, viable, by_class }
     }
 
     pub fn len(&self) -> usize {
         self.list.len()
+    }
+
+    /// The candidates in tailwind's order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.list.iter().map(|s| &**s)
     }
 
     pub fn is_empty(&self) -> bool {

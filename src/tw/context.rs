@@ -107,6 +107,8 @@ pub type VFn = Arc<dyn Fn(&mut VariantApi) -> Result<VRet, String> + Send + Sync
 /// The api object `applyVariant` passes to variant functions.
 pub struct VariantApi<'a> {
     pub css: &'a mut Css,
+    /// `unitCache` of the `min-*`/`max-*` variants (context state, so clones do not share it)
+    pub screen_units: &'a mut HashSet<String>,
     pub clone: NodeId,
     pub formats: Vec<Format>,
     pub args: VariantArgs,
@@ -234,6 +236,8 @@ pub struct Context<'c> {
     pub errors: Vec<String>,
     /// identifiers registered while this is `Some` (the `@layer` rules of the input)
     pub layer_identifiers: Option<Vec<String>>,
+    /// `unitCache` of the screen variants
+    pub screen_units: HashSet<String>,
     /// `buildStylesheet`'s sorted rule cache (layers only), valid while the rule cache has this
     /// many entries
     pub sorted_rules: Option<(usize, Arc<Vec<(super::offsets::Layer, NodeId)>>)>,
@@ -286,6 +290,7 @@ impl<'c> Context<'c> {
             variant_identifier: 0,
             errors: Vec::new(),
             layer_identifiers: None,
+            screen_units: HashSet::default(),
             sorted_rules: None,
         }
     }

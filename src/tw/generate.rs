@@ -280,6 +280,7 @@ impl<'c> Context<'c> {
                 let clone = self.css.clone_node(src);
                 let mut api = VariantApi {
                     css: &mut self.css,
+                    screen_units: &mut self.screen_units,
                     clone,
                     formats: Vec::new(),
                     args: args.clone(),

@@ -170,3 +170,38 @@ fn candidates_with_class() {
     let c = tailwindcss_v3::Candidates::new(["card", "md:card", "hover:!-card", "[&_p]:card", "card-lg", "md:flex", "x-card"]);
     assert_eq!(c.with_class("card"), ["[&_p]:card", "card", "hover:!-card", "md:card"]);
 }
+
+/// `Candidates::new` against `candidates_from_tokens` on token lists with whitespace.
+#[test]
+fn candidates_tokenization_fuzz() {
+    let alphabet = ["a", "b", "md:x", "!*", "", " ", "\n", "\t", "a\tb", " a", "b ", "x\ny", "\u{a0}", "c", "\r\n", "  "];
+    let mut seed: u64 = 0x2545f4914f6cdd1d;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for _ in 0..20_000 {
+        let len = (next() % 12) as usize;
+        let tokens: Vec<&str> = (0..len).map(|_| alphabet[(next() % alphabet.len() as u64) as usize]).collect();
+        let want: Vec<String> =
+            tailwindcss_v3::tw::process::candidates_from_tokens(tokens.iter().copied(), &[]).into_iter().filter(|c| c != "\u{0}*").collect();
+        let got: Vec<String> = tailwindcss_v3::Candidates::new(tokens.iter().copied()).iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, want, "{tokens:?}");
+    }
+}
+
+/// Generations of one `Generator` do not share state (the `min-*` unit cache once did).
+#[test]
+fn generator_calls_are_independent() {
+    let config = tailwindcss_v3::Config::default_config();
+    let list = ["min-[640px]:flex", "p-4"];
+    let cands = tailwindcss_v3::Candidates::new(list);
+    let g = tailwindcss_v3::Generator::new(&config, &cands);
+    let a = ".a { @apply min-[40em]:flex }";
+    let b = ".b { @apply min-[700px]:block }";
+    let _ = g.generate(a);
+    assert_eq!(g.generate(b), tailwindcss_v3::generate(&config, b, list));
+    assert_eq!(g.generate(a), tailwindcss_v3::generate(&config, a, list));
+}

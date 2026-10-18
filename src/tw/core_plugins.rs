@@ -1,7 +1,7 @@
 //! `corePlugins.js`: the core utility plugins and the variant plugins.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::js::{self, Object, Value};
 use crate::postcss::{Add, Flow, NodeId};
@@ -2238,27 +2238,25 @@ pub fn screen_variants(api: &mut PluginApi) -> Result<(), String> {
         _ => true,
     };
     let screens = normalize_screens(&api.theme("screens"))?;
-    let unit_cache: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    let mut unit_cache: HashSet<String> = HashSet::new();
     fn units(value: &str) -> String {
         // value.match(/(\D+)$/)?.[1] ?? '(none)'
         let t = value.trim_end_matches(|c: char| !c.is_ascii_digit());
         let tail = &value[t.len()..];
         if tail.is_empty() { "(none)".into() } else { tail.to_string() }
     }
-    {
-        let mut uc = unit_cache.lock().unwrap();
-        for sc in &screens {
-            for v in &sc.values {
-                if !v.min.is_undefined() {
-                    uc.insert(units(&v.min.to_js_string()));
-                }
-                if !v.max.is_undefined() {
-                    uc.insert(units(&v.max.to_js_string()));
-                }
+    for sc in &screens {
+        for v in &sc.values {
+            if !v.min.is_undefined() {
+                unit_cache.insert(units(&v.min.to_js_string()));
+            }
+            if !v.max.is_undefined() {
+                unit_cache.insert(units(&v.max.to_js_string()));
             }
         }
     }
-    let consistent = unit_cache.lock().unwrap().len() <= 1;
+    let consistent = unit_cache.len() <= 1;
+    api.ctx.screen_units = unit_cache.into_iter().collect();
     let build_values = |ty: &str| -> Vec<(String, VarValue)> {
         let mut out: Vec<(String, VarValue)> = Vec::new();
         for screen in screens.iter().filter(|s| super::screens::is_screen_sortable(s)) {
@@ -2284,13 +2282,12 @@ pub fn screen_variants(api: &mut PluginApi) -> Result<(), String> {
         out
     };
     let build_variant = |ty: &'static str| -> MatchVariantFn {
-        let uc = unit_cache.clone();
-        Arc::new(move |value, _modifier, _ctx| {
+        Arc::new(move |value, _modifier, ctx| {
             if !are_simple || !consistent {
                 return Ok(URet::Arr(vec![]));
             }
             if let VarValue::Str(st) = value {
-                let mut c = uc.lock().unwrap();
+                let c = &mut *ctx.api.screen_units;
                 c.insert(units(st));
                 if c.len() != 1 {
                     return Ok(URet::Arr(vec![]));
