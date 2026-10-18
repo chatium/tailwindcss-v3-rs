@@ -227,6 +227,7 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
         for p in after {
             p(&mut api).map_err(plain)?;
         }
+        api.ctx.layer_identifiers.get_or_insert_with(Vec::new);
         for lp in layer_plugins {
             match lp {
                 LayerPlugin::Base(n) => api.add_base(vec![Style::Node(n)]).map_err(plain)?,
@@ -235,6 +236,12 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
             }
         }
     }
+    let ids = ctx.layer_identifiers.take();
+    ctx.layer_identifiers = ids.map(|mut v| {
+        v.sort();
+        v.dedup();
+        v
+    });
     ctx.finish_variants(&variant_list);
 
     // safelist
@@ -341,12 +348,14 @@ pub fn candidates_from_tokens<'a>(tokens: impl IntoIterator<Item = &'a str>, saf
             }
         }
     }
-    // the String object compares as '*' and is never equal to the primitive
-    fn key(s: &str) -> &str {
-        if s == super::context::NOT_ON_DEMAND { "*" } else { s }
-    }
-    set.sort_by(|a, b| crate::js::cmp_utf16(key(a), key(b)));
+    set.sort_by(|a, b| crate::js::cmp_utf16(sort_key(a), sort_key(b)));
     set
+}
+
+/// The rule cache sorted by offsets: (layer, rule)
+pub fn sorted_rules(ctx: &Context) -> Arc<Vec<(Layer, NodeId)>> {
+    let entries: Vec<(super::offsets::RuleOffset, NodeId)> = ctx.rule_cache.iter().flatten().cloned().collect();
+    Arc::new(ctx.offsets.sort(entries).into_iter().map(|(o, r)| (o.layer, r)).collect())
 }
 
 /// `expandTailwindAtRules(context)(root)`
@@ -372,11 +381,14 @@ pub fn expand_tailwind_at_rules(ctx: &mut Context, root: NodeId, candidates: &[S
     ctx.generate_rules(candidates).map_err(plain)?;
 
     // buildStylesheet
-    let entries: Vec<(super::offsets::RuleOffset, NodeId)> = ctx.rule_cache.iter().flatten().cloned().collect();
-    let sorted = ctx.offsets.sort(entries);
+    let sorted = match ctx.sorted_rules.take() {
+        Some((n, sorted)) if n == ctx.rule_cache.len() => sorted,
+        _ => sorted_rules(ctx),
+    };
     let mut layers: [Vec<NodeId>; 5] = Default::default(); // base, defaults, components, utilities, variants
-    for (sort, rule) in sorted {
-        let i = match sort.layer {
+    let mut seen: [crate::js::FxHashSet<NodeId>; 5] = Default::default();
+    for &(layer, rule) in sorted.iter() {
+        let i = match layer {
             Layer::Base => 0,
             Layer::Defaults => 1,
             Layer::Components => 2,
@@ -384,7 +396,7 @@ pub fn expand_tailwind_at_rules(ctx: &mut Context, root: NodeId, candidates: &[S
             Layer::Variants => 4,
             Layer::User => continue,
         };
-        if !layers[i].contains(&rule) {
+        if seen[i].insert(rule) {
             layers[i].push(rule);
         }
     }
@@ -803,13 +815,32 @@ pub fn process_tailwind_features<'a, 'c>(
     root: NodeId,
     candidates: impl IntoIterator<Item = &'a str>,
 ) -> Result<()> {
+    prepare(ctx, root)?;
+    let safelist = std::mem::take(&mut ctx.changed_content);
+    let candidates = candidates_from_tokens(candidates, &safelist);
+    finish(ctx, root, &candidates)
+}
+
+/// The part of `processTailwindFeatures` before the candidates are needed: directives and the
+/// context (core plugins, `@layer` rules of the input, safelist in `ctx.changed_content`).
+pub fn prepare(ctx: &mut Context, root: NodeId) -> Result<()> {
     normalize_tailwind_directives(ctx, root)?;
     partition_apply_at_rules(ctx, root);
     let cfg = ctx.cfg;
-    create_context(cfg, ctx, root)?;
-    let safelist = std::mem::take(&mut ctx.changed_content);
-    let candidates = candidates_from_tokens(candidates, &safelist);
-    expand_tailwind_at_rules(ctx, root, &candidates)?;
+    create_context(cfg, ctx, root)
+}
+
+/// `prepare` for a clone of a context that went through it without `@layer` rules: false when
+/// the input has `@layer` rules (the clone is then unusable).
+pub fn prepare_without_layers(ctx: &mut Context, root: NodeId) -> Result<bool> {
+    normalize_tailwind_directives(ctx, root)?;
+    partition_apply_at_rules(ctx, root);
+    Ok(collect_layer_plugins(ctx, root).is_empty())
+}
+
+/// The rest of `processTailwindFeatures` over the candidate list of `candidates_from_tokens`.
+pub fn finish(ctx: &mut Context, root: NodeId, candidates: &[String]) -> Result<()> {
+    expand_tailwind_at_rules(ctx, root, candidates)?;
     partition_apply_at_rules(ctx, root);
     ctx.expand_apply_at_rules(root)?;
     ctx.evaluate_tailwind_functions(root)?;
@@ -818,4 +849,30 @@ pub fn process_tailwind_features<'a, 'c>(
     collapse_adjacent_rules(ctx, root);
     collapse_duplicate_declarations(ctx, root);
     Ok(())
+}
+
+/// `candidates_from_tokens` for tokens that already went through it (distinct, no whitespace
+/// splitting left to do) plus the safelist.
+pub fn merge_candidates(tokens: Vec<&str>, safelist: &[String]) -> Vec<String> {
+    let mut set: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+    if !safelist.is_empty() {
+        let mut seen: crate::js::FxHashSet<&str> = tokens.iter().copied().collect();
+        for c in safelist {
+            for line in c.split('\n') {
+                for tok in crate::js::trim(line).split(' ') {
+                    if tok != "!*" && seen.insert(tok) {
+                        set.push(tok.to_string());
+                    }
+                }
+            }
+        }
+    }
+    set.push(super::context::NOT_ON_DEMAND.to_string());
+    set.sort_by(|a, b| crate::js::cmp_utf16(sort_key(a), sort_key(b)));
+    set
+}
+
+/// The String object compares as '*' and is never equal to the primitive.
+fn sort_key(s: &str) -> &str {
+    if s == super::context::NOT_ON_DEMAND { "*" } else { s }
 }

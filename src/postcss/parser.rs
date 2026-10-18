@@ -102,14 +102,14 @@ impl<'a, 'b> Parser<'a, 'b> {
         let n = &mut self.arena[node];
         if text.chars().all(|c| c.is_whitespace_js()) {
             n.text = String::new();
-            n.raws.left = Some(text.to_string());
-            n.raws.right = Some(String::new());
+            n.raws.more_mut().left = Some(text.to_string());
+            n.raws.more_mut().right = Some(String::new());
         } else {
             let start = text.len() - text.trim_start_matches(|c: char| c.is_whitespace_js()).len();
             let trimmed_end = text.trim_end_matches(|c: char| c.is_whitespace_js()).len();
             n.text = text[start..trimmed_end].to_string();
-            n.raws.left = Some(text[..start].to_string());
-            n.raws.right = Some(text[trimmed_end..].to_string());
+            n.raws.more_mut().left = Some(text[..start].to_string());
+            n.raws.more_mut().right = Some(text[trimmed_end..].to_string());
         }
     }
 
@@ -323,7 +323,9 @@ impl<'a, 'b> Parser<'a, 'b> {
             n.prop = prop;
             n.raws.between = Some(between);
             n.important = important;
-            n.raws.important = raws_important;
+            if raws_important.is_some() {
+                n.raws.more_mut().important = raws_important;
+            }
         }
         let mut all = first_spaces;
         all.extend(tokens.iter().copied());
@@ -451,7 +453,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.arena[node].raws.between = Some(between);
         if !params.is_empty() {
             let after_name = self.spaces_and_comments_from_start(&mut params);
-            self.arena[node].raws.after_name = Some(after_name);
+            self.arena[node].raws.more_mut().after_name = Some(after_name);
             self.raw(node, Prop::Params, &params, false);
             if last {
                 let t = *params.last().unwrap();
@@ -460,7 +462,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.arena[node].raws.between = Some(String::new());
             }
         } else {
-            self.arena[node].raws.after_name = Some(String::new());
+            self.arena[node].raws.more_mut().after_name = Some(String::new());
             self.arena[node].params = String::new();
         }
 
@@ -513,8 +515,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         let cur = self.current;
         if let Some(list) = &self.arena[cur].nodes {
             if let Some(&prev) = list.last() {
-                if self.arena[prev].kind == Kind::Rule && self.arena[prev].raws.own_semicolon.as_deref().is_none_or(|s| s.is_empty()) {
-                    self.arena[prev].raws.own_semicolon = Some(std::mem::take(&mut self.spaces));
+                if self.arena[prev].kind == Kind::Rule && self.arena[prev].raws.more().own_semicolon.as_deref().is_none_or(|s| s.is_empty()) {
+                    self.arena[prev].raws.more_mut().own_semicolon = Some(std::mem::take(&mut self.spaces));
                 }
             }
         }
@@ -550,9 +552,9 @@ impl<'a, 'b> Parser<'a, 'b> {
             let raw: String = tokens.iter().map(|t| t.text(self.css)).collect();
             let rv = Some(RawValue { raw, value: value.clone() });
             match prop {
-                Prop::Selector => n.raws.selector = rv,
-                Prop::Value => n.raws.value = rv,
-                Prop::Params => n.raws.params = rv,
+                Prop::Selector => n.raws.more_mut().selector = rv,
+                Prop::Value => n.raws.more_mut().value = rv,
+                Prop::Params => n.raws.more_mut().params = rv,
             }
         }
         match prop {

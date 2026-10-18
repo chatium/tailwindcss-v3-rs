@@ -42,6 +42,16 @@ pub struct Raws {
     pub after: Option<String>,
     pub between: Option<String>,
     pub semicolon: Option<bool>,
+    /// `raws.neededBackup` (tailwind variants)
+    pub needed_backup: bool,
+    /// `raws.tailwind`
+    pub tailwind: Option<Box<TwRaws>>,
+    /// the raws most nodes do not have
+    pub more: Option<Box<RawsMore>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RawsMore {
     pub after_name: Option<String>,
     pub important: Option<String>,
     pub left: Option<String>,
@@ -51,12 +61,30 @@ pub struct Raws {
     pub selector: Option<RawValue>,
     pub value: Option<RawValue>,
     pub params: Option<RawValue>,
-    /// `raws.tailwind`
-    pub tailwind: Option<Box<TwRaws>>,
-    /// `raws.neededBackup` (tailwind variants)
-    pub needed_backup: bool,
     /// `raws.originalSelector` (tailwind variants)
     pub original_selector: Option<String>,
+}
+
+static NO_MORE: RawsMore = RawsMore {
+    after_name: None,
+    important: None,
+    left: None,
+    right: None,
+    own_semicolon: None,
+    indent: None,
+    selector: None,
+    value: None,
+    params: None,
+    original_selector: None,
+};
+
+impl Raws {
+    pub fn more(&self) -> &RawsMore {
+        self.more.as_deref().unwrap_or(&NO_MORE)
+    }
+    pub fn more_mut(&mut self) -> &mut RawsMore {
+        self.more.get_or_insert_with(Default::default)
+    }
 }
 
 /// `raws.tailwind`
@@ -205,12 +233,16 @@ pub struct Node {
     pub ap_self_disabled: bool,
     /// `_autoprefixerCascade` (only truthy values stick)
     pub ap_cascade: bool,
-    /// `_autoprefixerPrefix`: None = not computed, Some(None) = false
-    pub ap_prefix: Option<Option<String>>,
-    /// `_autoprefixerMax`
-    pub ap_max: Option<usize>,
-    /// `_autoprefixerValues`
-    pub ap_values: Option<Vec<(String, String)>>,
+    /// `_autoprefixerPrefix`, `_autoprefixerMax`, `_autoprefixerValues`
+    pub ap: Option<Box<ApCache>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApCache {
+    /// None = not computed, Some(None) = false
+    pub prefix: Option<Option<String>>,
+    pub max: Option<usize>,
+    pub values: Option<Vec<(String, String)>>,
 }
 
 impl Node {
@@ -234,9 +266,7 @@ impl Node {
             ap_disabled: None,
             ap_self_disabled: false,
             ap_cascade: false,
-            ap_prefix: None,
-            ap_max: None,
-            ap_values: None,
+            ap: None,
         }
     }
 
@@ -285,31 +315,133 @@ impl Flow {
     }
 }
 
-#[derive(Default)]
+/// The node arena. `freeze` moves the nodes into a shared base, so a clone after it is cheap:
+/// base nodes are copied into the clone only when it mutates them.
+#[derive(Default, Clone)]
 pub struct Css {
-    pub nodes: Vec<Node>,
+    base: std::sync::Arc<Vec<Node>>,
+    /// per base node: index of its mutable copy in `copies`, or `u32::MAX`
+    copied: Vec<u32>,
+    copies: Vec<Node>,
+    /// nodes with ids from `base.len()` on
+    nodes: Vec<Node>,
 }
 
 impl std::ops::Index<NodeId> for Css {
     type Output = Node;
+    #[inline]
     fn index(&self, id: NodeId) -> &Node {
-        &self.nodes[id.0 as usize]
+        let i = id.0 as usize;
+        if i < self.base.len() {
+            match self.copied[i] {
+                u32::MAX => &self.base[i],
+                c => &self.copies[c as usize],
+            }
+        } else {
+            &self.nodes[i - self.base.len()]
+        }
     }
 }
 impl std::ops::IndexMut<NodeId> for Css {
+    #[inline]
     fn index_mut(&mut self, id: NodeId) -> &mut Node {
-        &mut self.nodes[id.0 as usize]
+        let i = id.0 as usize;
+        if i < self.base.len() {
+            if self.copied[i] == u32::MAX {
+                self.copied[i] = self.copies.len() as u32;
+                self.copies.push(self.base[i].clone());
+            }
+            &mut self.copies[self.copied[i] as usize]
+        } else {
+            let b = self.base.len();
+            &mut self.nodes[i - b]
+        }
     }
 }
 
 impl Css {
     pub fn new() -> Css {
-        Css { nodes: Vec::with_capacity(1024) }
+        Css { nodes: Vec::with_capacity(1024), ..Default::default() }
     }
 
     pub fn add(&mut self, node: Node) -> NodeId {
         self.nodes.push(node);
-        NodeId(self.nodes.len() as u32 - 1)
+        NodeId((self.base.len() + self.nodes.len()) as u32 - 1)
+    }
+
+    pub fn len(&self) -> usize {
+        self.base.len() + self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Drops every tree none of whose nodes is in `refs`, renumbering the rest (relative order
+    /// kept). Returns old id → new id (`u32::MAX` for dropped nodes).
+    pub fn compact(&mut self, refs: &[NodeId]) -> Vec<u32> {
+        let len = self.len();
+        let mut keep = vec![false; len];
+        let mut stack: Vec<NodeId> = Vec::new();
+        for &r in refs {
+            let top = self.top(r);
+            if !keep[top.0 as usize] {
+                stack.push(top);
+                while let Some(n) = stack.pop() {
+                    if !keep[n.0 as usize] {
+                        keep[n.0 as usize] = true;
+                        stack.extend(self.children(n).iter().copied());
+                    }
+                }
+            }
+        }
+        let mut map = vec![u32::MAX; len];
+        let mut next = 0;
+        for (i, k) in keep.iter().enumerate() {
+            if *k {
+                map[i] = next;
+                next += 1;
+            }
+        }
+        let m = |id: NodeId| NodeId(map[id.0 as usize]);
+        let mut nodes = Vec::with_capacity(next as usize);
+        let old: Vec<Node> = if self.base.is_empty() {
+            std::mem::take(&mut self.nodes)
+        } else {
+            (0..len).map(|i| self[NodeId(i as u32)].clone()).collect()
+        };
+        for (n, k) in old.into_iter().zip(keep) {
+            if k {
+                let mut n = n;
+                n.parent = n.parent.map(m);
+                if let Some(list) = &mut n.nodes {
+                    for c in list.iter_mut() {
+                        *c = m(*c);
+                    }
+                }
+                nodes.push(n);
+            }
+        }
+        *self = Css { nodes, ..Default::default() };
+        map
+    }
+
+    /// Moves every node into the shared base (ids stay the same).
+    pub fn freeze(&mut self) {
+        if self.base.is_empty() {
+            self.copied = vec![u32::MAX; self.nodes.len()];
+            self.base = std::sync::Arc::new(std::mem::take(&mut self.nodes));
+            return;
+        }
+        let len = self.base.len() + self.nodes.len();
+        let mut all = Vec::with_capacity(len);
+        for i in 0..len {
+            all.push(self[NodeId(i as u32)].clone());
+        }
+        self.base = std::sync::Arc::new(all);
+        self.copied = vec![u32::MAX; len];
+        self.copies = Vec::new();
+        self.nodes = Vec::new();
     }
 
     // ---- factories (`postcss.rule({...})` etc.)

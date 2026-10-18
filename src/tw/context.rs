@@ -121,7 +121,7 @@ impl VariantApi<'_> {
         }
         self.css[self.clone].raws.needed_backup = true;
         self.css.walk_rules(self.clone, &mut |css, r| {
-            css[r].raws.original_selector = Some(css[r].selector.clone());
+            css[r].raws.more_mut().original_selector = Some(css[r].selector.clone());
             Flow::Continue
         });
     }
@@ -214,23 +214,29 @@ pub struct VariantEntry {
     pub container: Option<NodeId>,
 }
 
+#[derive(Clone)]
 pub struct Context<'c> {
     pub css: Css,
     pub cfg: &'c TwConfig,
-    pub candidate_rule_map: HashMap<String, Vec<(Meta, PluginRule)>>,
-    pub variant_map: HashMap<String, Vec<VariantEntry>>,
-    pub variant_options: HashMap<String, VariantOptions>,
+    pub candidate_rule_map: Arc<HashMap<String, Vec<(Meta, PluginRule)>>>,
+    pub variant_map: Arc<HashMap<String, Vec<VariantEntry>>>,
+    pub variant_options: Arc<HashMap<String, VariantOptions>>,
     pub offsets: Offsets,
-    pub class_cache: HashMap<String, Vec<Match>>,
-    pub not_class_cache: HashSet<String>,
-    pub candidate_rule_cache: HashMap<String, Vec<usize>>,
+    pub class_cache: Arc<HashMap<String, Vec<Match>>>,
+    pub not_class_cache: Arc<HashSet<String>>,
+    pub candidate_rule_cache: Arc<HashMap<String, Vec<usize>>>,
     /// `context.ruleCache` in insertion order (`None` = deleted)
-    pub rule_cache: Vec<Option<(RuleOffset, NodeId)>>,
+    pub rule_cache: Arc<Vec<Option<(RuleOffset, NodeId)>>>,
     pub apply_class_cache: HashMap<String, Vec<Match>>,
     pub changed_content: Vec<String>,
     variant_identifier: u32,
     /// `getClasses` cache (parse results only depend on the selector)
     pub errors: Vec<String>,
+    /// identifiers registered while this is `Some` (the `@layer` rules of the input)
+    pub layer_identifiers: Option<Vec<String>>,
+    /// `buildStylesheet`'s sorted rule cache (layers only), valid while the rule cache has this
+    /// many entries
+    pub sorted_rules: Option<(usize, Arc<Vec<(super::offsets::Layer, NodeId)>>)>,
 }
 
 pub type Plugin = Arc<dyn Fn(&mut PluginApi) -> Result<(), String> + Send + Sync>;
@@ -267,18 +273,67 @@ impl<'c> Context<'c> {
         Context {
             css: Css::new(),
             cfg,
-            candidate_rule_map: HashMap::default(),
-            variant_map: HashMap::default(),
-            variant_options: HashMap::default(),
+            candidate_rule_map: Default::default(),
+            variant_map: Default::default(),
+            variant_options: Default::default(),
             offsets: Offsets::new(),
-            class_cache: HashMap::default(),
-            not_class_cache: cfg.blocklist.iter().cloned().collect::<HashSet<String>>(),
-            candidate_rule_cache: HashMap::default(),
-            rule_cache: Vec::new(),
+            class_cache: Default::default(),
+            not_class_cache: Arc::new(cfg.blocklist.iter().cloned().collect::<HashSet<String>>()),
+            candidate_rule_cache: Default::default(),
+            rule_cache: Default::default(),
             apply_class_cache: HashMap::default(),
             changed_content: Vec::new(),
             variant_identifier: 0,
             errors: Vec::new(),
+            layer_identifiers: None,
+            sorted_rules: None,
+        }
+    }
+
+    /// Drops the nodes nothing in the context refers to (`Css::compact`).
+    pub fn compact_nodes(&mut self) {
+        let mut refs: Vec<NodeId> = Vec::new();
+        refs.extend(self.rule_cache.iter().flatten().map(|(_, n)| *n));
+        for v in self.candidate_rule_map.values() {
+            refs.extend(v.iter().filter_map(|(_, r)| if let PluginRule::Static(n) = r { Some(*n) } else { None }));
+        }
+        for v in self.class_cache.values().chain(self.apply_class_cache.values()) {
+            refs.extend(v.iter().map(|(_, n)| *n));
+        }
+        for v in self.variant_map.values() {
+            refs.extend(v.iter().filter_map(|e| e.container));
+        }
+        if let Some((_, s)) = &self.sorted_rules {
+            refs.extend(s.iter().map(|(_, n)| *n));
+        }
+        let map = self.css.compact(&refs);
+        let m = |n: &mut NodeId| *n = NodeId(map[n.0 as usize]);
+        for e in Arc::make_mut(&mut self.rule_cache).iter_mut().flatten() {
+            m(&mut e.1);
+        }
+        for v in Arc::make_mut(&mut self.candidate_rule_map).values_mut() {
+            for (_, r) in v.iter_mut() {
+                if let PluginRule::Static(n) = r {
+                    m(n);
+                }
+            }
+        }
+        for v in Arc::make_mut(&mut self.class_cache).values_mut().chain(self.apply_class_cache.values_mut()) {
+            for (_, n) in v.iter_mut() {
+                m(n);
+            }
+        }
+        for v in Arc::make_mut(&mut self.variant_map).values_mut() {
+            for e in v.iter_mut() {
+                if let Some(n) = &mut e.container {
+                    m(n);
+                }
+            }
+        }
+        if let Some((_, s)) = &mut self.sorted_rules {
+            for (_, n) in Arc::make_mut(s).iter_mut() {
+                m(n);
+            }
         }
     }
 
@@ -287,7 +342,10 @@ impl<'c> Context<'c> {
     }
 
     pub fn push_rule(&mut self, identifier: String, meta: Meta, rule: PluginRule) {
-        self.candidate_rule_map.entry(identifier).or_default().push((meta, rule));
+        if let Some(ids) = &mut self.layer_identifiers {
+            ids.push(identifier.clone());
+        }
+        Arc::make_mut(&mut self.candidate_rule_map).entry(identifier).or_default().push((meta, rule));
     }
 }
 
@@ -565,8 +623,8 @@ impl<'a, 'c> PluginApi<'a, 'c> {
             .into_iter()
             .map(|f| VariantEntry { sort: self.ctx.offsets.create(Layer::Variants), f, container: None })
             .collect();
-        self.ctx.variant_map.insert(name.to_string(), entries);
-        self.ctx.variant_options.insert(name.to_string(), options);
+        Arc::make_mut(&mut self.ctx.variant_map).insert(name.to_string(), entries);
+        Arc::make_mut(&mut self.ctx.variant_options).insert(name.to_string(), options);
         Ok(())
     }
 
@@ -745,11 +803,11 @@ impl<'c> Context<'c> {
         }
         let names: Vec<String> = self.variant_map.keys().cloned().collect();
         for name in names {
-            let mut list = self.variant_map.remove(&name).unwrap();
+            let mut list = Arc::make_mut(&mut self.variant_map).remove(&name).unwrap();
             for (idx, e) in list.iter_mut().enumerate() {
                 e.sort = self.offsets.for_variant(&name, idx as u64);
             }
-            self.variant_map.insert(name, list);
+            Arc::make_mut(&mut self.variant_map).insert(name, list);
         }
     }
 }

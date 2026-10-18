@@ -151,7 +151,7 @@ impl<'c> Context<'c> {
             }
             let matches = self.resolve_matches(c).map_err(CssError::plain)?;
             if matches.is_empty() {
-                self.not_class_cache.insert(c.clone());
+                std::sync::Arc::make_mut(&mut self.not_class_cache).insert(c.clone());
                 continue;
             }
             self.apply_class_cache.insert(c.clone(), matches);

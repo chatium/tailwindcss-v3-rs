@@ -8,6 +8,7 @@
 
 pub mod autoprefixer;
 pub mod extractor;
+mod generator;
 pub mod js;
 pub mod jsregex;
 pub mod postcss;
@@ -17,6 +18,7 @@ pub mod value_parser;
 
 use std::sync::Arc;
 
+pub use generator::{Candidates, Generator};
 pub use postcss::CssError;
 
 /// The prefix the Play bundle puts in front of the `<style type="text/tailwindcss">` blocks.

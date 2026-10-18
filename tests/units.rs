@@ -142,3 +142,25 @@ fn resolve_config() {
     }
     report("resolve-config", cases.len(), failed);
 }
+
+/// The extractor's hand-written scanners against the regex engine on random lines.
+#[test]
+fn extractor_scan_fuzz() {
+    let alphabet: Vec<&str> = vec![
+        "a", "b", "z", "Q", "0", "9", "_", "-", "-", ":", ":", "[", "]", "!", "@", "/", ".", "\"", "'", "`", "\\", "$", "=", "{", "}", "(", ")", "<", ">",
+        "#", "%", " ", " ", "\t", ",", "&", "*", "+", "é", "😀", "md:", "hover:", "bg-", "-[", "]:", "p-4", "w-1/2", "\n",
+    ];
+    let extractor = tailwindcss_v3::extractor::Extractor::new(":", "");
+    let mut seed: u64 = 0x9e3779b97f4a7c15;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for _ in 0..200_000 {
+        let len = (next() % 24) as usize;
+        let s: String = (0..len).map(|_| alphabet[(next() % alphabet.len() as u64) as usize]).collect();
+        assert_eq!(extractor.extract(&s), extractor.extract_reference(&s), "{s:?}");
+    }
+}

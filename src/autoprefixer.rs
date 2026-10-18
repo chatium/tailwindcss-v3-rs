@@ -475,6 +475,8 @@ fn replace_word(s: &str, word: &str, trailing: &[char], f: &dyn Fn(&str, &str) -
 
 pub struct Ap<'a> {
     css: &'a mut Css,
+    /// some comment mentions `autoprefixer:` (otherwise no control comment can apply)
+    control: bool,
 }
 
 /// `IGNORE_NEXT = /(!\s*)?autoprefixer:\s*ignore\s+next/i`
@@ -517,7 +519,7 @@ impl<'a> Ap<'a> {
         if let Some(v) = self.css[node].ap_disabled {
             return v;
         }
-        if self.css[node].parent.is_some() {
+        if self.control && self.css[node].parent.is_some() {
             if let Some(p) = self.css.prev(node) {
                 if self.css[p].kind == Kind::Comment && ignore_next(&self.css[p].text) {
                     self.css[node].ap_disabled = Some(true);
@@ -527,7 +529,7 @@ impl<'a> Ap<'a> {
             }
         }
         let mut value: Option<bool> = None;
-        if self.css[node].nodes.is_some() {
+        if self.control && self.css[node].nodes.is_some() {
             let mut status: Option<bool> = None;
             for c in self.css.children(node).to_vec() {
                 if self.css[c].kind != Kind::Comment {
@@ -560,7 +562,7 @@ impl<'a> Ap<'a> {
 
     /// `Prefixer#parentPrefix(node)`
     fn parent_prefix(&mut self, node: NodeId) -> Option<String> {
-        if let Some(p) = &self.css[node].ap_prefix {
+        if let Some(p) = self.css[node].ap.as_ref().and_then(|a| a.prefix.as_ref()) {
             return p.clone();
         }
         let n = &self.css[node];
@@ -584,7 +586,7 @@ impl<'a> Ap<'a> {
                 prefix = None;
             }
         }
-        self.css[node].ap_prefix = Some(prefix.clone());
+        self.css[node].ap.get_or_insert_with(Default::default).prefix = Some(prefix.clone());
         prefix
     }
 
@@ -602,13 +604,13 @@ impl<'a> Ap<'a> {
     }
 
     fn max_prefixed(&mut self, prefixes: &[String], decl: NodeId) -> usize {
-        if let Some(m) = self.css[decl].ap_max {
+        if let Some(m) = self.css[decl].ap.as_ref().and_then(|a| a.max) {
             if m != 0 {
                 return m;
             }
         }
         let max = prefixes.iter().map(|p| remove_note(p).len()).max().unwrap_or(0);
-        self.css[decl].ap_max = Some(max);
+        self.css[decl].ap.get_or_insert_with(Default::default).max = Some(max);
         max
     }
 
@@ -625,8 +627,10 @@ impl<'a> Ap<'a> {
     /// `Prefixer.clone(node, overrides)`: postcss-like deep copy without the prefix/value caches
     fn ap_clone(&mut self, node: NodeId) -> NodeId {
         let c = self.css.clone_node(node);
-        self.css[c].ap_prefix = None;
-        self.css[c].ap_values = None;
+        if let Some(a) = &mut self.css[c].ap {
+            a.prefix = None;
+            a.values = None;
+        }
         c
     }
 
@@ -871,10 +875,10 @@ impl<'a> Ap<'a> {
         if v.kind == ValueKind::Intrinsic && self.css[decl].prop.contains("grid") && prefix != "-webkit-" {
             return;
         }
-        let existing = self.css[decl].ap_values.as_ref().and_then(|l| l.iter().find(|(k, _)| k == prefix).map(|(_, x)| x.clone()));
+        let existing = self.css[decl].ap.as_ref().and_then(|a| a.values.as_ref()).and_then(|l| l.iter().find(|(k, _)| k == prefix).map(|(_, x)| x.clone()));
         let mut value = existing.filter(|x| !x.is_empty()).unwrap_or_else(|| {
             let n = &self.css[decl];
-            match &n.raws.value {
+            match &n.raws.more().value {
                 Some(r) if r.value == n.value => r.raw.clone(),
                 _ => n.value.clone(),
             }
@@ -886,7 +890,7 @@ impl<'a> Ap<'a> {
                 break;
             }
         }
-        let list = self.css[decl].ap_values.get_or_insert_with(Vec::new);
+        let list = self.css[decl].ap.get_or_insert_with(Default::default).values.get_or_insert_with(Vec::new);
         match list.iter_mut().find(|(k, _)| k == prefix) {
             Some(e) => e.1 = value,
             None => list.push((prefix.to_string(), value)),
@@ -895,7 +899,7 @@ impl<'a> Ap<'a> {
 
     /// `Value.save(prefixes, decl)`
     fn value_save(&mut self, decl: NodeId) {
-        let Some(values) = self.css[decl].ap_values.clone() else { return };
+        let Some(values) = self.css[decl].ap.as_ref().and_then(|a| a.values.clone()) else { return };
         for (prefix, value) in values {
             if value == self.css[decl].value {
                 continue;
@@ -1101,7 +1105,7 @@ impl<'a> Ap<'a> {
             self.disabled(r);
         }
         // declarations
-        walk_decls_live(self.css, root, &mut |ap, decl| {
+        walk_decls_live(self.css, root, self.control, &mut |ap, decl| {
             if ap.disabled(decl) {
                 return;
             }
@@ -1118,7 +1122,7 @@ impl<'a> Ap<'a> {
             }
         });
         // values
-        walk_decls_live(self.css, root, &mut |ap, decl| {
+        walk_decls_live(self.css, root, self.control, &mut |ap, decl| {
             if ap.css[decl].prop == "content" {
                 return;
             }
@@ -1136,10 +1140,10 @@ impl<'a> Ap<'a> {
 }
 
 /// `css.walkDecls(cb)` with postcss's live iteration semantics
-fn walk_decls_live(css: &mut Css, root: NodeId, f: &mut dyn FnMut(&mut Ap, NodeId)) {
+fn walk_decls_live(css: &mut Css, root: NodeId, control: bool, f: &mut dyn FnMut(&mut Ap, NodeId)) {
     css.walk(root, &mut |c, n| {
         if c[n].kind == Kind::Decl {
-            let mut ap = Ap { css: c };
+            let mut ap = Ap { css: c, control };
             f(&mut ap, n);
         }
         Flow::Continue
@@ -1736,7 +1740,15 @@ fn clean_brackets(nodes: Vec<B>) -> Vec<B> {
 
 /// Runs autoprefixer's `add` pass over `root`.
 pub fn autoprefix(css: &mut Css, root: NodeId) -> Result<(), CssError> {
-    let mut ap = Ap { css };
+    let mut control = false;
+    css.walk(root, &mut |c, n| {
+        if c[n].kind == Kind::Comment && c[n].text.to_ascii_lowercase().contains("autoprefixer:") {
+            control = true;
+            return Flow::Stop;
+        }
+        Flow::Continue
+    });
+    let mut ap = Ap { css, control };
     ap.add(root);
     Ok(())
 }

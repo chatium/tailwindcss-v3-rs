@@ -20,6 +20,31 @@ fn is_arbitrary_value(s: &str) -> bool {
     s.starts_with('[') && s.ends_with(']')
 }
 
+/// The class part of a candidate (`resolveMatches`: last top-level part, without `!`).
+pub fn class_part<'a>(candidate: &'a str, separator: &str) -> &'a str {
+    let parts = split_at_top_level_only(candidate, separator);
+    let last = parts.last().copied().unwrap_or(candidate);
+    last.strip_prefix('!').unwrap_or(last)
+}
+
+/// Whether `resolveMatchedPlugins(classCandidate)` yields anything given the candidate rule map
+/// keys (`has_key`); arbitrary properties are assumed to match. A candidate for which this is
+/// false resolves to nothing and leaves no trace in the context.
+pub fn has_plugins(class_candidate: &str, prefix: &str, has_key: impl Fn(&str) -> bool) -> bool {
+    if has_key(class_candidate) || is_arbitrary_value(class_candidate) {
+        return true;
+    }
+    let mut candidate_prefix = class_candidate.to_string();
+    let has_matching_prefix = candidate_prefix.starts_with(prefix) || candidate_prefix.starts_with(&format!("-{prefix}"));
+    if candidate_prefix.as_bytes().get(prefix.len()) == Some(&b'-') && has_matching_prefix {
+        candidate_prefix = format!("{prefix}{}", &candidate_prefix[prefix.len() + 1..]);
+        if has_key(&candidate_prefix) {
+            return true;
+        }
+    }
+    candidate_permutations(&candidate_prefix).iter().any(|(p, _)| has_key(p))
+}
+
 /// `candidatePermutations(candidate)`
 fn candidate_permutations(candidate: &str) -> Vec<(String, String)> {
     let b = candidate.as_bytes();
@@ -207,7 +232,7 @@ impl<'c> Context<'c> {
                 let f = super::context::parse_variant(crate::js::trim(s))?;
                 records.push(VariantEntry { sort: self.offsets.apply_parallel_offset(&sort, idx as u64), f, container: None });
             }
-            self.variant_map.insert(variant.clone(), records);
+            Arc::make_mut(&mut self.variant_map).insert(variant.clone(), records);
         }
 
         let Some(tuples) = self.variant_map.get(&variant).cloned() else {
@@ -281,7 +306,7 @@ impl<'c> Context<'c> {
                     let sep = self.cfg.separator.clone();
                     let mut err = None;
                     self.css.walk_rules(clone, &mut |css, r| {
-                        let Some(before) = css[r].raws.original_selector.take() else { return Flow::Continue };
+                        let Some(before) = css[r].raws.more.as_mut().and_then(|m| m.original_selector.take()) else { return Flow::Continue };
                         if before.is_empty() {
                             return Flow::Continue;
                         }
@@ -607,10 +632,10 @@ impl<'c> Context<'c> {
                 }
             };
             if matches.is_empty() {
-                self.not_class_cache.insert(candidate.clone());
+                Arc::make_mut(&mut self.not_class_cache).insert(candidate.clone());
                 continue;
             }
-            self.class_cache.insert(candidate.clone(), matches.clone());
+            Arc::make_mut(&mut self.class_cache).insert(candidate.clone(), matches.clone());
             let mut idxs = Vec::new();
             for (meta, rule) in matches {
                 let respect_important = meta.options.as_ref().and_then(|o| o.respect_important).unwrap_or(false);
@@ -620,10 +645,10 @@ impl<'c> Context<'c> {
                 }
                 let entry = (meta.sort.clone(), rule);
                 idxs.push(self.rule_cache.len());
-                self.rule_cache.push(Some(entry.clone()));
+                Arc::make_mut(&mut self.rule_cache).push(Some(entry.clone()));
                 all.push(entry);
             }
-            self.candidate_rule_cache.insert(candidate.clone(), idxs);
+            Arc::make_mut(&mut self.candidate_rule_cache).insert(candidate.clone(), idxs);
         }
         Ok(all)
     }

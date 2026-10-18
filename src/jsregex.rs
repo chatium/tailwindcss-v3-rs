@@ -1036,6 +1036,25 @@ impl Regex {
         None
     }
 
+    /// Whether the pattern can start at `pos` (FIRST-set filter only).
+    pub fn may_start(&self, t: &Tables, pos: usize) -> bool {
+        self.first[0].admits(t.units.get(pos).copied())
+    }
+
+    /// A match starting exactly at `start`: its end
+    pub fn match_at(&self, t: &mut Tables, start: usize) -> Option<usize> {
+        let mut slots = std::mem::take(&mut t.slots);
+        slots.clear();
+        slots.resize(self.slots, None);
+        let mut loops = std::mem::take(&mut t.loops);
+        loops.clear();
+        loops.resize(self.loops.max(1), usize::MAX);
+        let r = self.run(t, 0, start, &mut slots, &mut loops);
+        t.slots = slots;
+        t.loops = loops;
+        r
+    }
+
     /// `str.match(re)` with the `g` flag: all match ranges (UTF-16 indices)
     pub fn find_all_units(&self, t: &mut Tables) -> Vec<(usize, usize)> {
         let mut out = Vec::new();

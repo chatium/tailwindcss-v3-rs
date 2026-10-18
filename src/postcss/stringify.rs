@@ -42,17 +42,18 @@ impl RawV {
 
 fn own_raw(n: &Node, own: &str) -> RawV {
     let r = &n.raws;
+    let m = r.more();
     let s = |v: &Option<String>| v.clone().map(RawV::S).unwrap_or(RawV::Undef);
     match own {
         "before" => s(&r.before),
         "after" => s(&r.after),
         "between" => s(&r.between),
-        "left" => s(&r.left),
-        "right" => s(&r.right),
-        "afterName" => s(&r.after_name),
-        "important" => s(&r.important),
-        "ownSemicolon" => s(&r.own_semicolon),
-        "indent" => s(&r.indent),
+        "left" => s(&m.left),
+        "right" => s(&m.right),
+        "afterName" => s(&m.after_name),
+        "important" => s(&m.important),
+        "ownSemicolon" => s(&m.own_semicolon),
+        "indent" => s(&m.indent),
         "semicolon" => r.semicolon.map(RawV::B).unwrap_or(RawV::Undef),
         _ => RawV::Undef,
     }
@@ -315,7 +316,7 @@ fn raw_empty_body(css: &Css, root: NodeId) -> RawV {
 }
 
 fn raw_indent(css: &Css, root: NodeId) -> RawV {
-    if let Some(i) = &css[root].raws.indent {
+    if let Some(i) = &css[root].raws.more().indent {
         if !i.is_empty() {
             return RawV::S(i.clone());
         }
@@ -352,9 +353,9 @@ fn raw_semicolon(css: &Css, root: NodeId) -> RawV {
 
 fn raw_value<'a>(n: &'a Node, prop: &str) -> &'a str {
     let (value, raw) = match prop {
-        "selector" => (&n.selector, &n.raws.selector),
-        "params" => (&n.params, &n.raws.params),
-        _ => (&n.value, &n.raws.value),
+        "selector" => (&n.selector, &n.raws.more().selector),
+        "params" => (&n.params, &n.raws.more().params),
+        _ => (&n.value, &n.raws.more().value),
     };
     if let Some(r) = raw {
         if &r.value == value {
@@ -400,7 +401,7 @@ impl Stringifier<'_> {
     fn rule(&mut self, node: NodeId) {
         let sel = raw_value(&self.css[node], "selector").to_string();
         self.block(node, &sel);
-        if let Some(s) = &self.css[node].raws.own_semicolon {
+        if let Some(s) = &self.css[node].raws.more().own_semicolon {
             if !s.is_empty() {
                 let s = s.clone();
                 self.out.push_str(&s);
@@ -412,7 +413,7 @@ impl Stringifier<'_> {
         let n = &self.css[node];
         let mut name = format!("@{}", n.name);
         let params = if n.params.is_empty() { String::new() } else { raw_value(n, "params").to_string() };
-        if let Some(a) = &n.raws.after_name {
+        if let Some(a) = &n.raws.more().after_name {
             name.push_str(a);
         } else if !params.is_empty() {
             name.push(' ');
@@ -432,7 +433,7 @@ impl Stringifier<'_> {
         let n = &self.css[node];
         let mut string = format!("{}{}{}", n.prop, between, raw_value(n, "value"));
         if n.important {
-            match &n.raws.important {
+            match &n.raws.more().important {
                 Some(i) if !i.is_empty() => string.push_str(i),
                 _ => string.push_str(" !important"),
             }
