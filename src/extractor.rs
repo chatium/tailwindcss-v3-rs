@@ -218,6 +218,17 @@ impl Extractor {
     fn line_ranges(&self, line: &str, units: &mut Vec<u16>, offsets: &mut Vec<usize>, reference: bool) -> Vec<(u32, u32)> {
         units.clear();
         offsets.clear();
+        if line.is_ascii() {
+            // units are the bytes, unit indices the byte offsets
+            units.extend(line.bytes().map(u16::from));
+            let mut out = Vec::new();
+            for (s, e) in self.extract_line(units, reference) {
+                if &line[s..e] != "!*" {
+                    out.push((s as u32, e as u32));
+                }
+            }
+            return out;
+        }
         // unit index → byte offset (usize::MAX inside a surrogate pair)
         for (b, c) in line.char_indices() {
             let mut buf = [0u16; 2];
@@ -321,6 +332,24 @@ struct Scan<'a> {
     s3_end: Vec<u32>,
 }
 
+type ScanBuffers = (Vec<u8>, [Vec<u32>; 7]);
+
+thread_local! {
+    /// `Scan` tables are per line; their buffers are reused
+    static SCAN_BUFFERS: std::cell::RefCell<Vec<ScanBuffers>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl Drop for Scan<'_> {
+    fn drop(&mut self) {
+        let t = |v: &mut Vec<u32>| std::mem::take(v);
+        let b = (
+            std::mem::take(&mut self.flags),
+            [t(&mut self.ws_end), t(&mut self.next_bracket), t(&mut self.vp_end[0]), t(&mut self.vp_end[1]), t(&mut self.word_end), t(&mut self.s3_end), t(&mut self.prev_colon)],
+        );
+        SCAN_BUFFERS.with(|p| p.borrow_mut().push(b));
+    }
+}
+
 // per-unit classes
 const WS: u8 = 1;
 const WORD: u8 = 2;
@@ -381,22 +410,19 @@ fn is_word(u: u16) -> bool {
     u < 128 && ASCII_FLAGS[u as usize] & WORD != 0
 }
 
-/// For each index, the last index before it where `hit` holds (`u32::MAX` if none).
-fn prev_hits(line: &[u16], hit: impl Fn(u16) -> bool) -> Vec<u32> {
-    let mut v = vec![u32::MAX; line.len() + 1];
-    for i in 0..line.len() {
-        v[i + 1] = if hit(line[i]) { i as u32 } else { v[i] };
-    }
-    v
-}
 
 impl<'a> Scan<'a> {
     fn new(line: &'a [u16]) -> Scan<'a> {
         let n = line.len();
-        let flags: Vec<u8> = line.iter().map(|&u| unit_flags(u)).collect();
-        let end = vec![n as u32; n + 2];
-        let (mut ws_end, mut next_bracket, mut vp0, mut vp1, mut word_end, mut s3_end) =
-            (end.clone(), end.clone(), end.clone(), end.clone(), end.clone(), end);
+        let mut b = SCAN_BUFFERS.with(|p| p.borrow_mut().pop()).unwrap_or_default();
+        b.0.clear();
+        b.0.extend(line.iter().map(|&u| unit_flags(u)));
+        for v in b.1.iter_mut() {
+            v.clear();
+            v.resize(n + 2, n as u32);
+        }
+        let flags = b.0;
+        let [mut ws_end, mut next_bracket, mut vp0, mut vp1, mut word_end, mut s3_end, mut prev_colon] = b.1;
         for i in (0..n).rev() {
             let (f, x) = (flags[i], i as u32);
             ws_end[i] = if f & WS != 0 { x } else { ws_end[i + 1] };
@@ -406,16 +432,12 @@ impl<'a> Scan<'a> {
             word_end[i] = if f & WORD == 0 { x } else { word_end[i + 1] };
             s3_end[i] = if f & S3_STOP != 0 { x } else { s3_end[i + 1] };
         }
-        Scan {
-            line,
-            flags,
-            ws_end,
-            next_bracket,
-            vp_end: [vp0, vp1],
-            prev_colon: prev_hits(line, |u| u == b':' as u16),
-            word_end,
-            s3_end,
+        prev_colon.truncate(n + 1);
+        prev_colon[0] = u32::MAX;
+        for i in 0..n {
+            prev_colon[i + 1] = if line[i] == b':' as u16 { i as u32 } else { prev_colon[i] };
         }
+        Scan { line, flags, ws_end, next_bracket, vp_end: [vp0, vp1], prev_colon, word_end, s3_end }
     }
 
     fn at(&self, i: usize) -> u16 {
