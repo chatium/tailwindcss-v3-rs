@@ -187,15 +187,21 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
     let mut variant_list: Vec<String> = Vec::new();
     {
         let mut api = PluginApi { ctx, variant_list: &mut variant_list };
+        // every plugin call gets an id (for `Generator::derive`)
+        fn run(api: &mut PluginApi, plugin: impl FnOnce(&mut PluginApi) -> std::result::Result<(), String>) -> Result<()> {
+            plugin(api).map_err(plain)?;
+            api.ctx.current_plugin += 1;
+            Ok(())
+        }
         for (name, plugin) in cp::core_plugins() {
             if cfg.core_plugins.iter().any(|p| p == name) {
-                plugin(&mut api).map_err(plain)?;
+                run(&mut api, plugin)?;
             }
         }
         let before: [cp::CorePlugin; 6] =
             [cp::child_variant, cp::pseudo_element_variants, cp::pseudo_class_variants, cp::has_variants, cp::aria_variants, cp::data_variants];
         for p in before {
-            p(&mut api).map_err(plain)?;
+            run(&mut api, p)?;
         }
         let dm = cfg.value.get("darkMode");
         let legacy = dm == Value::str("class") || dm.as_arr().is_some_and(|a| a.first() == Some(&Value::str("class")));
@@ -225,7 +231,7 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
             ]
         };
         for p in after {
-            p(&mut api).map_err(plain)?;
+            run(&mut api, p)?;
         }
         api.ctx.layer_identifiers.get_or_insert_with(Vec::new);
         for lp in layer_plugins {
@@ -634,6 +640,23 @@ fn collapse_ws(s: &str) -> String {
     super::util::collapse_ws(s)
 }
 
+/// `collapseAdjacentRules`: whether `node` (a rule or at-rule other than `@font-face`) merges
+/// into the current rule `cur`.
+pub fn collapses_into(css: &crate::postcss::Css, cur: NodeId, node: NodeId) -> bool {
+    match css[node].kind {
+        Kind::AtRule => {
+            // `node[property] ?? ''` — a rule compared with an at-rule has no `name`
+            let cn = if css[cur].kind == Kind::AtRule { css[cur].name.clone() } else { String::new() };
+            let cp = if css[cur].kind == Kind::AtRule { css[cur].params.clone() } else { String::new() };
+            collapse_ws(&css[node].name) == collapse_ws(&cn) && collapse_ws(&css[node].params) == collapse_ws(&cp)
+        }
+        _ => {
+            let cs = if css[cur].kind == Kind::Rule { css[cur].selector.clone() } else { String::new() };
+            collapse_ws(&css[node].selector) == collapse_ws(&cs)
+        }
+    }
+}
+
 fn collapse_rules_in(ctx: &mut Context, root: NodeId) {
     let mut current: Option<NodeId> = None;
     ctx.css.each(root, &mut |css, node| {
@@ -650,19 +673,7 @@ fn collapse_rules_in(ctx: &mut Context, root: NodeId) {
             current = Some(node);
             return Flow::Continue;
         }
-        let same = match kind {
-            Kind::AtRule => {
-                // `node[property] ?? ''` — a rule compared with an at-rule has no `name`
-                let cn = if css[cur].kind == Kind::AtRule { css[cur].name.clone() } else { String::new() };
-                let cp = if css[cur].kind == Kind::AtRule { css[cur].params.clone() } else { String::new() };
-                collapse_ws(&css[node].name) == collapse_ws(&cn) && collapse_ws(&css[node].params) == collapse_ws(&cp)
-            }
-            _ => {
-                let cs = if css[cur].kind == Kind::Rule { css[cur].selector.clone() } else { String::new() };
-                collapse_ws(&css[node].selector) == collapse_ws(&cs)
-            }
-        };
-        if same {
+        if collapses_into(css, cur, node) {
             if css[node].nodes.is_some() {
                 let nodes = css.children(node).to_vec();
                 css.append(cur, Add::Nodes(nodes));

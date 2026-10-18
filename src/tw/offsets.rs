@@ -180,7 +180,7 @@ pub struct RuleOffset {
     pub options: Vec<VariantOption>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 pub struct Offsets {
     offsets: [u64; 6],
     reserved_variant_bits: u64,

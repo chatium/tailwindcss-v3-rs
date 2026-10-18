@@ -60,6 +60,18 @@ impl PartialEq for Value {
     }
 }
 
+/// Structural equality: same JSON-like shape, keys in the same order (functions by identity).
+pub fn deep_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Arr(x), Value::Arr(y)) => Arc::ptr_eq(x, y) || (x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| deep_eq(p, q))),
+        (Value::Obj(x), Value::Obj(y)) => {
+            Arc::ptr_eq(x, y) || (x.len() == y.len() && x.iter().zip(y.iter()).all(|((k1, v1), (k2, v2))| k1 == k2 && deep_eq(v1, v2)))
+        }
+        (Value::Num(x), Value::Num(y)) => x.to_bits() == y.to_bits() || x == y,
+        _ => a == b,
+    }
+}
+
 impl From<&str> for Value {
     fn from(s: &str) -> Self {
         Value::Str(s.into())

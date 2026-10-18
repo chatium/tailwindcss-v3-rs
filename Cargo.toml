@@ -14,3 +14,7 @@ regex = { version = "=1.12.3", default-features = false, features = ["std", "uni
 
 [profile.release]
 debug = 1
+
+[dev-dependencies]
+# benchmarks only: the allocator the consumer runs with
+mimalloc = { version = "=0.1.52", default-features = false }

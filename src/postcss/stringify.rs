@@ -129,7 +129,7 @@ pub(crate) fn raw_v(css: &mut Css, node: NodeId, own: Option<&str>, detect: Opti
         _ => {
             let own = own.unwrap_or("");
             let mut found = RawV::Undef;
-            for i in css.descendants(root) {
+            for (i, _, _) in css.walk_down(root) {
                 let v = own_raw(&css[i], own);
                 if v != RawV::Undef {
                     found = v;
@@ -209,7 +209,7 @@ fn before_after(css: &mut Css, node: NodeId, detect: &str) -> String {
 
 fn raw_before_close(css: &Css, root: NodeId) -> RawV {
     let mut value = None;
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if n.nodes.as_ref().is_some_and(|l| !l.is_empty()) {
             if let Some(a) = &n.raws.after {
@@ -227,7 +227,7 @@ fn raw_before_close(css: &Css, root: NodeId) -> RawV {
 
 fn raw_before_comment(css: &mut Css, root: NodeId, node: NodeId) -> RawV {
     let mut value = None;
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if n.kind == Kind::Comment {
             if let Some(b) = &n.raws.before {
@@ -245,7 +245,7 @@ fn raw_before_comment(css: &mut Css, root: NodeId, node: NodeId) -> RawV {
 
 fn raw_before_decl(css: &mut Css, root: NodeId, node: NodeId) -> RawV {
     let mut value = None;
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if n.kind == Kind::Decl {
             if let Some(b) = &n.raws.before {
@@ -262,7 +262,7 @@ fn raw_before_decl(css: &mut Css, root: NodeId, node: NodeId) -> RawV {
 }
 
 fn raw_before_open(css: &Css, root: NodeId) -> RawV {
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if n.kind != Kind::Decl {
             if let Some(b) = &n.raws.between {
@@ -275,9 +275,9 @@ fn raw_before_open(css: &Css, root: NodeId) -> RawV {
 
 fn raw_before_rule(css: &Css, root: NodeId) -> RawV {
     let mut value = None;
-    for i in css.descendants(root) {
+    for (i, p, _) in css.walk_down(root) {
         let n = &css[i];
-        if n.nodes.is_some() && (n.parent != Some(root) || css.first(root) != Some(i)) {
+        if n.nodes.is_some() && (p != root || css.first(root) != Some(i)) {
             if let Some(b) = &n.raws.before {
                 value = Some(strip_last_line(b));
                 break;
@@ -292,7 +292,7 @@ fn raw_before_rule(css: &Css, root: NodeId) -> RawV {
 }
 
 fn raw_colon(css: &Css, root: NodeId) -> RawV {
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if n.kind == Kind::Decl {
             if let Some(b) = &n.raws.between {
@@ -304,7 +304,7 @@ fn raw_colon(css: &Css, root: NodeId) -> RawV {
 }
 
 fn raw_empty_body(css: &Css, root: NodeId) -> RawV {
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if n.nodes.as_ref().is_some_and(|l| l.is_empty()) {
             if let Some(a) = &n.raws.after {
@@ -321,14 +321,13 @@ fn raw_indent(css: &Css, root: NodeId) -> RawV {
             return RawV::S(i.clone());
         }
     }
-    for i in css.descendants(root) {
+    // parents as the walk reaches them (a spliced root lends nodes whose pointers differ)
+    for (i, p, pp) in css.walk_down(root) {
         let n = &css[i];
-        if let Some(p) = n.parent {
-            if p != root && css[p].parent == Some(root) {
-                if let Some(b) = &n.raws.before {
-                    let last = b.split('\n').last().unwrap_or("");
-                    return RawV::S(only_ws(last));
-                }
+        if p != root && pp == Some(root) {
+            if let Some(b) = &n.raws.before {
+                let last = b.split('\n').last().unwrap_or("");
+                return RawV::S(only_ws(last));
             }
         }
     }
@@ -336,7 +335,7 @@ fn raw_indent(css: &Css, root: NodeId) -> RawV {
 }
 
 fn raw_semicolon(css: &Css, root: NodeId) -> RawV {
-    for i in css.descendants(root) {
+    for (i, _, _) in css.walk_down(root) {
         let n = &css[i];
         if let Some(list) = &n.nodes {
             if let Some(&last) = list.last() {
@@ -377,7 +376,103 @@ pub fn to_string(css: &mut Css, node: NodeId) -> String {
     s.out
 }
 
+/// A root's output split per child (`before` + the child) plus the root's `raws.after`.
+pub fn to_string_parts(css: &mut Css, root: NodeId) -> (Vec<String>, String) {
+    let mut s = Stringifier { css, out: String::new() };
+    let mut parts = Vec::new();
+    s.body_with(root, &mut |s: &mut Stringifier, i, f: &mut dyn FnMut(&mut Stringifier)| {
+        let _ = i;
+        let start = s.out.len();
+        f(s);
+        parts.push(s.out[start..].to_string());
+        s.out.truncate(start);
+    });
+    let after = s.css[root].raws.after.clone().unwrap_or_default();
+    (parts, after)
+}
+
+/// `root.toString()` where the first `pre.0` children print as `pre.1` and the last `post.0` as
+/// `post.1` (their `before` included).
+pub fn to_string_spliced(css: &mut Css, root: NodeId, pre: (usize, &str), post: (usize, &str)) -> String {
+    let n = css.children(root).len();
+    let mut s = Stringifier { css, out: String::new() };
+    s.body_with(root, &mut |s: &mut Stringifier, i, f: &mut dyn FnMut(&mut Stringifier)| {
+        if i < pre.0 {
+            if i == 0 {
+                s.out.push_str(pre.1);
+            }
+        } else if i >= n - post.0 {
+            if i == n - post.0 {
+                s.out.push_str(post.1);
+            }
+        } else {
+            f(s);
+        }
+    });
+    if let Some(a) = &s.css[root].raws.after {
+        let a = a.clone();
+        s.out.push_str(&a);
+    }
+    s.out
+}
+
+/// The root's inferred raws so far (`rawCache`).
+pub fn raw_cache(css: &Css, root: NodeId) -> Vec<(&'static str, String)> {
+    css[root].raw_cache.as_deref().cloned().unwrap_or_default()
+}
+
+/// Every raw `raw()` infers from the whole tree (and caches on the root).
+pub const INFERRED_RAWS: [&str; 11] =
+    ["beforeClose", "beforeComment", "beforeDecl", "beforeOpen", "beforeRule", "colon", "commentLeft", "commentRight", "emptyBody", "indent", "semicolon"];
+
+/// Infers raw `kind` the way the stringifier asks for it, for `node`'s root.
+pub fn infer_kind(css: &mut Css, node: NodeId, kind: &str) -> String {
+    let own = match kind {
+        "commentLeft" => Some("left"),
+        "commentRight" => Some("right"),
+        "colon" => Some("between"),
+        "beforeOpen" => Some("between"),
+        "emptyBody" => Some("after"),
+        "semicolon" => Some("semicolon"),
+        _ => None,
+    };
+    raw_v(css, node, own, Some(kind)).into_string()
+}
+
+/// Replaces the root's inferred raws.
+pub fn set_raw_cache(css: &mut Css, root: NodeId, cache: Vec<(&'static str, String)>) {
+    css[root].raw_cache = Some(Box::new(cache));
+}
+
+/// Infers (and caches) raw `detect` for `node`'s root.
+pub fn infer_raw(css: &mut Css, node: NodeId, detect: &str) -> String {
+    raw(css, node, None, detect)
+}
+
 impl Stringifier<'_> {
+    /// `body(node)` with each child's output (`before` + child) produced by `emit(i, print)`.
+    fn body_with(&mut self, node: NodeId, emit: &mut dyn FnMut(&mut Stringifier, usize, &mut dyn FnMut(&mut Stringifier))) {
+        let list = self.css.children(node).to_vec();
+        let mut last = list.len() as isize - 1;
+        while last > 0 {
+            if self.css[list[last as usize]].kind != Kind::Comment {
+                break;
+            }
+            last -= 1;
+        }
+        let semicolon = matches!(raw_v(self.css, node, Some("semicolon"), Some("semicolon")), RawV::B(true));
+        for (i, &child) in list.iter().enumerate() {
+            let mut print = |s: &mut Stringifier| {
+                let before = raw(s.css, child, Some("before"), "before");
+                if !before.is_empty() {
+                    s.out.push_str(&before);
+                }
+                s.stringify(child, last != i as isize || semicolon);
+            };
+            emit(self, i, &mut print);
+        }
+    }
+
     fn stringify(&mut self, node: NodeId, semicolon: bool) {
         match self.css[node].kind {
             Kind::Root => self.root(node),

@@ -45,6 +45,24 @@ pub fn has_plugins(class_candidate: &str, prefix: &str, has_key: impl Fn(&str) -
     candidate_permutations(&candidate_prefix).iter().any(|(p, _)| has_key(p))
 }
 
+/// The (candidate rule map key, modifier) pairs `resolveMatchedPlugins(classCandidate)` looks up,
+/// in order (the arbitrary property, which needs no key, left out).
+pub fn lookup_plan(class_candidate: &str, prefix: &str) -> Vec<(String, String)> {
+    let mut out = vec![(class_candidate.to_string(), "DEFAULT".to_string())];
+    let mut candidate_prefix = class_candidate.to_string();
+    let mut negative = false;
+    let has_matching_prefix = candidate_prefix.starts_with(prefix) || candidate_prefix.starts_with(&format!("-{prefix}"));
+    if candidate_prefix.as_bytes().get(prefix.len()) == Some(&b'-') && has_matching_prefix {
+        negative = true;
+        candidate_prefix = format!("{prefix}{}", &candidate_prefix[prefix.len() + 1..]);
+        out.push((candidate_prefix.clone(), "-DEFAULT".to_string()));
+    }
+    for (p, m) in candidate_permutations(&candidate_prefix) {
+        out.push((p, if negative { format!("-{m}") } else { m }));
+    }
+    out
+}
+
 /// `candidatePermutations(candidate)`
 fn candidate_permutations(candidate: &str) -> Vec<(String, String)> {
     let b = candidate.as_bytes();

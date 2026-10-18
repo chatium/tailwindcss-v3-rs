@@ -139,7 +139,7 @@ impl Cup {
                     }),
                 ));
             }
-            let theme_values = api.theme(key);
+            let theme_values = api.theme_values(key);
             let values = if self.filter_default {
                 let mut o = Object::new();
                 if let Value::Obj(src) = if theme_values.is_nullish() { Object::new().into_value() } else { theme_values.clone() } {
@@ -173,12 +173,12 @@ fn with_alpha(value: &Value, property: &[&str], variable: &str) -> Value {
     with_alpha_variable(value, property, variable)
 }
 
-fn color_values(api: &PluginApi, key: &str) -> Value {
-    flatten_color_palette(&api.theme(key)).into_value()
+fn color_values(api: &mut PluginApi, key: &str) -> Value {
+    flatten_color_palette(&api.theme_values(key)).into_value()
 }
 
-fn color_values_no_default(api: &PluginApi, key: &str) -> Value {
-    without_default(flatten_color_palette(&api.theme(key)))
+fn color_values_no_default(api: &mut PluginApi, key: &str) -> Value {
+    without_default(flatten_color_palette(&api.theme_values(key)))
 }
 
 /// `matchUtilities({ [name]: value => ({ [prop]: toColorValue(value) }) }, { values, type: ['color', 'any'] })`
@@ -298,7 +298,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
         }),
         ("boxSizing", |api| add_utils(api, statics(&[(".box-border", &[("box-sizing", "border-box")]), (".box-content", &[("box-sizing", "content-box")])]))),
         ("lineClamp", |api| {
-            let values = api.theme("lineClamp");
+            let values = api.theme_values("lineClamp");
             api.match_utilities(
                 vec![(
                     "line-clamp",
@@ -740,7 +740,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
             Ok(())
         }),
         ("divideOpacity", |api| {
-            let values = api.theme("divideOpacity");
+            let values = api.theme_values("divideOpacity");
             api.match_utilities(
                 vec![("divide-opacity", rf(|value, _| obj(vec![("& > :not([hidden]) ~ :not([hidden])", obj(vec![("--tw-divide-opacity", value.clone())]))])))],
                 values_only(values),
@@ -1173,7 +1173,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
             Ok(())
         }),
         ("placeholderOpacity", |api| {
-            let values = api.theme("placeholderOpacity");
+            let values = api.theme_values("placeholderOpacity");
             api.match_utilities(
                 vec![("placeholder-opacity", rf(|value, _| obj(vec![("&::placeholder", obj(vec![("--tw-placeholder-opacity", value.clone())]))])))],
                 values_only(values),
@@ -1248,7 +1248,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
             Ok(())
         }),
         ("ringOpacity", |api| {
-            let filter = !super::config::flag_enabled(api.config_value(), "respectDefaultRingColorOpacity");
+            let filter = !api.flag("respectDefaultRingColorOpacity");
             cup("ringOpacity", single("ring-opacity", vec![v("--tw-ring-opacity")])).filter_default(filter).run(api)
         }),
         ("ringOffsetWidth", |api| cup("ringOffsetWidth", single("ring-offset", vec![v("--tw-ring-offset-width")])).ty(&["length"]).run(api)),
@@ -1330,7 +1330,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
         ("transitionProperty", |api| {
             let tf = api.theme("transitionTimingFunction.DEFAULT");
             let dur = api.theme("transitionDuration.DEFAULT");
-            let values = api.theme("transitionProperty");
+            let values = api.theme_values("transitionProperty");
             api.match_utilities(
                 vec![(
                     "transition",
@@ -1377,7 +1377,8 @@ fn preflight(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn container(api: &mut PluginApi) -> Result<(), String> {
-    let screens_v = api.theme_or("container.screens", api.theme("screens"));
+    let screens = api.theme("screens");
+    let screens_v = api.theme_or("container.screens", screens);
     let screens = normalize_screens(&screens_v)?;
     let min_widths: Vec<Value> = screens.iter().flat_map(|s| s.values.iter().map(|v| v.min.clone())).filter(|v| !v.is_undefined()).collect();
     let paddings = api.theme("container.padding");
@@ -1479,7 +1480,7 @@ fn accessibility(api: &mut PluginApi) -> Result<(), String> {
 
 fn border_spacing(api: &mut PluginApi) -> Result<(), String> {
     api.add_defaults("border-spacing", obj(vec![("--tw-border-spacing-x", Value::Num(0.0)), ("--tw-border-spacing-y", Value::Num(0.0))]))?;
-    let values = api.theme("borderSpacing");
+    let values = api.theme_values("borderSpacing");
     let d = || ("@defaults border-spacing", Object::new().into_value());
     let bs = || ("border-spacing", s("var(--tw-border-spacing-x) var(--tw-border-spacing-y)"));
     api.match_utilities(
@@ -1505,7 +1506,7 @@ fn animation(api: &mut PluginApi) -> Result<(), String> {
             keyframes.insert(k.clone(), inner.into_value());
         }
     }
-    let values = api.theme("animation");
+    let values = api.theme_values("animation");
     let keyframes = Arc::new(keyframes);
     api.match_utilities(
         vec![(
@@ -1557,7 +1558,7 @@ fn touch_action(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn space(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme("space");
+    let values = api.theme_values("space");
     let zero = |v: &Value| if *v == s("0") { "0px".to_string() } else { v.to_js_string() };
     api.match_utilities(
         vec![
@@ -1602,7 +1603,7 @@ fn space(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn divide_width(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme("divideWidth");
+    let values = api.theme_values("divideWidth");
     let zero = |v: &Value| if *v == s("0") { "0px".to_string() } else { v.to_js_string() };
     let d = || ("@defaults border-width", Object::new().into_value());
     api.match_utilities(
@@ -1682,7 +1683,7 @@ fn gradient_color_stops(api: &mut PluginApi) -> Result<(), String> {
     )?;
     let transparent_to = |v: &Value| with_alpha_value(v, &Value::Num(0.0), &s("rgb(255 255 255 / 0)")).to_js_string();
     let values = color_values(api, "gradientColorStops");
-    let positions = api.theme("gradientColorStopPositions");
+    let positions = api.theme_values("gradientColorStopPositions");
     let d = || ("@defaults gradient-color-stops", Object::new().into_value());
     let color_opts = || opts(values.clone(), &["color", "any"]);
     let pos_opts = || opts(positions.clone(), &["length", "percentage"]);
@@ -1732,7 +1733,7 @@ fn gradient_color_stops(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn font_family(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme("fontFamily");
+    let values = api.theme_values("fontFamily");
     api.match_utilities(
         vec![(
             "font",
@@ -1764,8 +1765,8 @@ fn font_family(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn font_size(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme("fontSize");
-    let modifiers = api.theme("lineHeight");
+    let values = api.theme_values("fontSize");
+    let modifiers = api.theme_values("lineHeight");
     api.match_utilities(
         vec![(
             "text",
@@ -1827,7 +1828,7 @@ fn box_shadow(api: &mut PluginApi) -> Result<(), String> {
         "box-shadow",
         objs(&[("--tw-ring-offset-shadow", "0 0 #0000"), ("--tw-ring-shadow", "0 0 #0000"), ("--tw-shadow", "0 0 #0000"), ("--tw-shadow-colored", "0 0 #0000")]),
     )?;
-    let values = api.theme("boxShadow");
+    let values = api.theme_values("boxShadow");
     let default_box_shadow = "var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)";
     api.match_utilities(
         vec![(
@@ -1857,7 +1858,7 @@ fn box_shadow(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn ring_width(api: &mut PluginApi) -> Result<(), String> {
-    let ring_color_default = if super::config::flag_enabled(api.config_value(), "respectDefaultRingColorOpacity") {
+    let ring_color_default = if api.flag("respectDefaultRingColorOpacity") {
         api.theme("ringColor.DEFAULT")
     } else {
         let ring_opacity_default = api.theme_or("ringOpacity.DEFAULT", s("0.5"));
@@ -1869,12 +1870,14 @@ fn ring_width(api: &mut PluginApi) -> Result<(), String> {
             with_alpha_value(&rc.get("DEFAULT"), &ring_opacity_default, &fallback)
         }
     };
+    let offset_width = api.theme_or("ringOffsetWidth.DEFAULT", s("0px"));
+    let offset_color = api.theme_or("ringOffsetColor.DEFAULT", s("#fff"));
     api.add_defaults(
         "ring-width",
         obj(vec![
             ("--tw-ring-inset", s(" ")),
-            ("--tw-ring-offset-width", api.theme_or("ringOffsetWidth.DEFAULT", s("0px"))),
-            ("--tw-ring-offset-color", api.theme_or("ringOffsetColor.DEFAULT", s("#fff"))),
+            ("--tw-ring-offset-width", offset_width),
+            ("--tw-ring-offset-color", offset_color),
             ("--tw-ring-color", ring_color_default),
             ("--tw-ring-offset-shadow", s("0 0 #0000")),
             ("--tw-ring-shadow", s("0 0 #0000")),
@@ -1882,7 +1885,7 @@ fn ring_width(api: &mut PluginApi) -> Result<(), String> {
             ("--tw-shadow-colored", s("0 0 #0000")),
         ]),
     )?;
-    let values = api.theme("ringWidth");
+    let values = api.theme_values("ringWidth");
     api.match_utilities(
         vec![(
             "ring",
@@ -1910,7 +1913,7 @@ enum FilterKind {
 }
 
 fn filter_fn(api: &mut PluginApi, name: &'static str, key: &str, var: &'static str, kind: FilterKind, backdrop: bool) -> Result<(), String> {
-    let values = api.theme(key);
+    let values = api.theme_values(key);
     let kind = Arc::new(kind);
     let rule = rf(move |value, _| {
         let v = match &*kind {
@@ -2045,8 +2048,8 @@ enum PState {
     Visited,
 }
 
-fn pseudo_variants(api: &PluginApi) -> Vec<(String, PState)> {
-    let hover = if super::config::flag_enabled(api.config_value(), "hoverOnlyWhenSupported") {
+fn pseudo_variants(api: &mut PluginApi) -> Vec<(String, PState)> {
+    let hover = if api.flag("hoverOnlyWhenSupported") {
         "@media (hover: hover) and (pointer: fine) { &:hover }".to_string()
     } else {
         "&:hover".to_string()
@@ -2320,7 +2323,7 @@ pub fn screen_variants(api: &mut PluginApi) -> Result<(), String> {
     Ok(())
 }
 
-fn theme_values(api: &PluginApi, key: &str) -> Vec<(String, VarValue)> {
+fn theme_values(api: &mut PluginApi, key: &str) -> Vec<(String, VarValue)> {
     match api.theme(key) {
         Value::Obj(o) => o.iter().map(|(k, v)| (k.to_string(), match v {
             Value::Str(s) => VarValue::Str(s.to_string()),

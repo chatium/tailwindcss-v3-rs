@@ -200,7 +200,13 @@ fn generator_local() {
                 if !generators.iter().any(|(k, _)| *k == key) {
                     let t = std::time::Instant::now();
                     let config: &'static tailwindcss_v3::Config = Box::leak(Box::new(config));
-                    generators.push((key.clone(), tailwindcss_v3::Generator::new(config, &cands)));
+                    // every other config of the account derived from the first one (NO_DERIVE=1:
+                    // each made on its own)
+                    let g = match generators.first() {
+                        Some((_, base)) if std::env::var("NO_DERIVE").is_err() => base.derive(config),
+                        _ => tailwindcss_v3::Generator::new(config, &cands),
+                    };
+                    generators.push((key.clone(), g));
                     t_new += t.elapsed();
                 }
             }

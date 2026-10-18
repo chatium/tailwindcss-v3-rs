@@ -35,7 +35,10 @@ let css = tailwindcss_v3::generate(&config, blocks, candidates)?;
 // один раз на аккаунт: нормализация, дедупликация, отсев кандидатов без корня утилиты
 let candidates = tailwindcss_v3::Candidates::new(all_classes.iter().map(|s| s.as_str()));
 // один раз на конфиг: матчинг годных кандидатов по теме этого конфига
-let generator = tailwindcss_v3::Generator::new(&config, &candidates);
+let base = tailwindcss_v3::Generator::new(&base_config, &candidates);
+// остальные конфиги аккаунта — от базы: перематчиваются только кандидаты, чьи поиски в теме
+// дают другое (обычно несколько процентов); иначе — тот же Generator::new
+let generator = base.derive(&config);
 // на каждую настройку, параллельно (&self, Send + Sync)
 let css = generator.generate(blocks)?;
 let css = generator.generate_excluding(blocks, &skip)?; // = generate(config, blocks, все \ skip)
@@ -53,11 +56,21 @@ let css = generator.generate_excluding(blocks, &skip)?; // = generate(config, bl
   Исключение — кэш единиц `min-*`/`max-*`, такие кандидаты держатся всегда.
 - Блоки меняют набор дающих правила кандидатов только своими `@layer`-классами: кандидаты с
   такой utility-частью берутся из индекса по имени класса на каждый вызов.
-- Блоки без `@layer` (большинство) идут быстрым путём: клон контекста, где кандидаты уже
-  сматчены (арена узлов — copy-on-write).
+- Сгенерированная часть вывода обрабатывается один раз на генератор (первым `generate`), а
+  блоки вызова проходят проходы отдельно и печатаются между её частями. Условия, при которых
+  это равно полному прогону, проверяются на каждом вызове (границы склейки соседних правил,
+  `@defaults`, autoprefixer, выводимые raws стрингифаера, см. `Prefab` в `src/generator.rs`);
+  если условие не выполнено — полный прогон. Блоки с `@layer` всегда идут полным прогоном.
+- `derive` сравнивает чтения конфига каждым плагином при регистрации; если отличаются только
+  значения `values`/`modifiers` у `matchUtilities`, кандидат перематчивается, лишь когда
+  `coerceValue`/`getMatchingTypes` дают для него другое. Если различия глубже (`prefix`,
+  `separator`, `important`, `corePlugins`, варианты/`screens`, `darkMode`, `safelist`, …) —
+  тот же `Generator::new`.
 
-`Generator` держит контекст конфига (~14 МБ на emi-test) и заимствует `Config` и `Candidates`;
-если конфигов много, держите генератор только на время его настроек.
+`Generator` заимствует `Config` и `Candidates` и держит контекст конфига и обработанную
+сгенерированную часть (~18 МБ на emi-test); если конфигов много, держите базу на всё время, а
+производные — только на время их настроек. Проверка — `tests/conformance.rs` (`generator_local`,
+`GENERATOR=1`) и дифференциальный фаззинг `generator_fuzz` в `tests/units.rs`.
 
 - `Config: Send + Sync + Clone`; один конфиг можно использовать из многих потоков.
 - `generate` принимает кандидатов как набор классов из DOM: порядок и дубли не важны, лишние
@@ -157,15 +170,16 @@ Apple M-серии, `--release`.
 
 - `generate` на аккаунте с ~1 млн кандидатов — ~1,4 с; ~300 тыс. — ~0,4 с; типичный набор
   (10–50 тыс.) — десятки миллисекунд.
-- `Candidates` + `Generator`, все настройки аккаунта на 10 потоках
-  (`examples/bench_generator.rs`, `PLAIN=1` — сравнение с `generate` на каждую настройку):
+- `Candidates` + `Generator` (остальные конфиги — `derive` от самого частого), все настройки
+  аккаунта на 10 потоках, mimalloc (`examples/bench_generator.rs`, `DERIVE=1`; `PLAIN=1` —
+  `generate` на каждую настройку):
 
   | Аккаунт | Кандидатов | Настроек / конфигов | N × `generate` | `Candidates` + `Generator` |
   | --- | ---: | ---: | ---: | ---: |
-  | emi-test | 372 тыс. | 388 / 175 | 21,2 с | 3,6 с (×5,9) |
-  | dudinkonstantin | 1 008 тыс. | 82 / 11 | 15,2 с | 1,4 с (×10,9) |
-  | chatium.ru | 298 тыс. | 96 / 63 | 4,7 с | 1,4 с (×3,4) |
-  | familycontact | 201 тыс. | 64 / 46 | 2,0 с | 0,6 с (×3,3) |
+  | emi-test | 372 тыс. | 388 / 175 | 15,7 с | 1,62 с (×9,7) |
+  | dudinkonstantin | 1 008 тыс. | 82 / 11 | 10,0 с | 0,37 с (×27) |
+  | chatium.ru | 298 тыс. | 96 / 63 | 3,2 с | 0,66 с (×4,9) |
+  | familycontact | 201 тыс. | 64 / 46 | 1,3 с | 0,29 с (×4,7) |
 
 - `extract_candidates`: собственные сканеры вместо движка регулярок там, где в «слове» нет `[`
   (сверка с движком — фаззинг в `tests/units.rs`). 83 МБ исходников dudinkonstantin — 6,0 с

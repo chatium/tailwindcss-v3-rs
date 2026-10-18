@@ -205,3 +205,97 @@ fn generator_calls_are_independent() {
     assert_eq!(g.generate(b), tailwindcss_v3::generate(&config, b, list));
     assert_eq!(g.generate(a), tailwindcss_v3::generate(&config, a, list));
 }
+
+/// `Generator` (prefab splicing, derived configs) against `generate` on random blocks made of
+/// pieces that reach across the generated rules: whitespace styles, comments, `@apply` (with
+/// variants and defaults), media queries that match the variants', `@font-face`, `@import`,
+/// top-level declarations, `theme()`, `@screen`, autoprefixer input, directives. `FUZZ_N` sets
+/// the number of runs per config.
+#[test]
+fn generator_fuzz() {
+    let pieces = [
+        "",
+        "\n  .a { color: red; }\n",
+        ".a{color:red}",
+        "/* c */",
+        "/*! keep */\n",
+        "\n\n/*x*/\n",
+        ".b { @apply p-4 text-red-500; }",
+        "\n    .c {\n      @apply hover:underline sm:flex;\n    }\n",
+        "@media (min-width: 640px) { .d { @apply font-bold; } }",
+        "@media (min-width: 640px) {\n  .e { color: blue }\n}",
+        "\n@media (min-width: 768px) {\n    .z { color: red }\n}\n",
+        "@media (prefers-color-scheme: dark) { .pc { color: red } }",
+        ".hover\\:underline:hover { x: y }",
+        "@supports (display: grid) { .g { display: grid } }",
+        "@font-face { font-family: X; src: url(x.woff) }",
+        "@import url('x.css');",
+        "color: red;",
+        ".t { color: theme('colors.red.500') }",
+        "@screen md { .s { color: red } }",
+        "::placeholder { color: gray }",
+        ".tr { transition: transform 1s; user-select: none; backdrop-filter: blur(2px); }",
+        "  .w {\n      display: flex;\n  }\n",
+        "\t.x\t{\tmargin:0\t}",
+        ".y { @apply shadow ring; }",
+        "@tailwind utilities;",
+        "@layer components { .btn { @apply px-4 } }",
+        "*, ::before, ::after { box-sizing: border-box }",
+        ".container { max-width: 1px }",
+        "/* autoprefixer: off */",
+        ".ab { @apply dark:bg-black; }",
+        ".p-4 { color: red }",
+        ".sm\\:flex { color: red }",
+        ".bad { @apply nonexistent; }",
+        ".mm { @apply min-[40em]:flex; }",
+        "@media (min-width: 640px) { .sm\\:flex { display: flex } }",
+        ".e2 {}",
+        "\n",
+        ";",
+        "\n    .gh {\n      @apply font-normal group-hover:underline;\n    }\n  ",
+        "\n  .pe { @apply peer-focus:flex !p-4; }\n",
+        "\n  .dk { @apply dark:sm:flex; }",
+    ];
+    let configs = [
+        serde_json::json!({}),
+        serde_json::json!({ "corePlugins": { "preflight": false } }),
+        serde_json::json!({ "important": true, "darkMode": "class" }),
+        serde_json::json!({ "theme": { "extend": { "colors": { "brand": "#123456" } } } }),
+        serde_json::json!({ "theme": { "extend": { "colors": { "brand": "#654321", "red": { "500": "#f00" } } } } }),
+        serde_json::json!({ "important": "#app", "corePlugins": { "preflight": false } }),
+    ];
+    let list = [
+        "p-4", "sm:flex", "hover:underline", "font-normal", "group-hover:underline", "peer-focus:flex", "md:p-2", "lg:grid", "text-red-500", "shadow", "transition", "dark:bg-black", "placeholder:text-gray-500",
+        "select-none", "bg-brand", "md:bg-brand/50", "text-brand", "backdrop-blur", "min-[640px]:flex", "[&_p]:mt-1", "container",
+    ];
+    let n: usize = std::env::var("FUZZ_N").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+    let mut seed: u64 = 0x5851f42d4c957f2d;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let parsed: Vec<tailwindcss_v3::Config> = configs.iter().map(|c| tailwindcss_v3::Config::from_json(c.clone()).unwrap()).collect();
+    for subset in 0..3 {
+        let cands: Vec<&str> = list.iter().copied().filter(|_| subset == 0 || next() % 2 == 0).collect();
+        let candidates = tailwindcss_v3::Candidates::new(cands.iter().copied());
+        let base = tailwindcss_v3::Generator::new(&parsed[0], &candidates);
+        for (ci, config) in parsed.iter().enumerate() {
+            let generator = if ci == 0 { None } else { Some(base.derive(config)) };
+            let g = generator.as_ref().unwrap_or(&base);
+            for _ in 0..n {
+                let k = (next() % 5) as usize;
+                let seps = ["", "\n", "\n  ", " "];
+                let mut blocks = String::new();
+                for _ in 0..k {
+                    blocks.push_str(seps[(next() % 4) as usize]);
+                    blocks.push_str(pieces[(next() % pieces.len() as u64) as usize]);
+                }
+                let want = tailwindcss_v3::generate(config, &blocks, cands.iter().copied());
+                let got = g.generate(&blocks);
+                assert_eq!(got, want, "config {ci}, candidates {cands:?}, blocks {blocks:?}");
+            }
+        }
+    }
+}
