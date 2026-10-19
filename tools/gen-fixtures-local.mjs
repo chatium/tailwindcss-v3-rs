@@ -1,46 +1,22 @@
 // Reference outputs for the local production corpus (tests/corpus-local/accounts.json, built by
-// extract-corpus.mjs). Runs the Play bundle for every case in parallel worker processes and writes
+// extract-corpus.mjs): the stylesheet `@tailwind base;@tailwind components;@tailwind utilities;`
+// + the setup's blocks through the reference (ref.mjs), in parallel worker processes. Writes
 // tests/fixtures-local/accounts/<index>.json = { name, account, expected, dropped? }.
 //
 //   node tools/gen-fixtures-local.mjs [--jobs N] [--only substring]
 import fs from 'node:fs'
 import os from 'node:os'
 import { fork } from 'node:child_process'
-import { runPlay } from './play.mjs'
+import { reference } from './gen-fixtures.mjs'
 
+const PREFIX = '@tailwind base;@tailwind components;@tailwind utilities;'
 const corpusPath = new URL('../tests/corpus-local/accounts.json', import.meta.url)
 const outDir = new URL('../tests/fixtures-local/accounts/', import.meta.url)
-
-async function reference(config, blocks, candidates) {
-  let r = await runPlay({ config, blocks, candidates })
-  let dropped = []
-  if (r.error && r.error.name !== 'CssSyntaxError' && candidates.length) {
-    const base = await runPlay({ config, blocks, candidates: [] })
-    if (!base.error) {
-      const crashes = async list => {
-        const x = await runPlay({ config, blocks, candidates: list })
-        return x.error && x.error.name !== 'CssSyntaxError'
-      }
-      const search = async list => {
-        if (!list.length || !(await crashes(list))) return
-        if (list.length === 1) return void dropped.push(list[0])
-        const mid = list.length >> 1
-        await search(list.slice(0, mid))
-        await search(list.slice(mid))
-      }
-      await search(candidates)
-      const kept = candidates.filter(c => !dropped.includes(c))
-      r = await runPlay({ config, blocks, candidates: kept })
-    }
-  }
-  return { expected: r, dropped }
-}
-
 if (process.argv[2] === '--worker') {
   const corpus = JSON.parse(fs.readFileSync(corpusPath, 'utf8'))
   process.on('message', async ({ index }) => {
     const c = corpus.cases[index]
-    const { expected, dropped } = await reference(c.config, c.blocks, corpus.candidates[c.account])
+    const { expected, dropped } = await reference({ config: c.config, css: PREFIX + c.blocks, candidates: corpus.candidates[c.account] })
     fs.writeFileSync(new URL(`${index}.json`, outDir), JSON.stringify({ name: c.name, account: c.account, expected, ...(dropped.length ? { dropped } : {}) }))
     process.send({ index, ok: !expected.error, dropped: dropped.length })
   })

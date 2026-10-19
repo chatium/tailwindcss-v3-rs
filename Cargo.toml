@@ -3,7 +3,7 @@ name = "tailwindcss-v3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Rust port of the Tailwind CSS v3.4.16 compiler (byte-identical to the Play CDN bundle)"
+description = "Rust port of the Tailwind CSS v3.4.19 compiler (byte-identical to tailwindcss + autoprefixer)"
 repository = "https://github.com/chatium/tailwindcss-v3-rs"
 publish = false
 
@@ -14,7 +14,3 @@ regex = { version = "=1.12.3", default-features = false, features = ["std", "uni
 
 [profile.release]
 debug = 1
-
-[dev-dependencies]
-# benchmarks only: the allocator the consumer runs with
-mimalloc = { version = "=0.1.52", default-features = false }

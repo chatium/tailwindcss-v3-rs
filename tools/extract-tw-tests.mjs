@@ -1,8 +1,8 @@
-// Collects the inputs of tailwindcss v3.4.16's own test-suite (tools/upstream/tests/*.test.js,
-// the v3.4.16 tag) by running every test with a stubbed `run(input, config)` that records its
+// Collects the inputs of tailwindcss v3.4.19's own test-suite (tools/upstream/tests/*.test.js,
+// the v3.4.19 tag) by running every test with a stubbed `run(input, config)` that records its
 // arguments. Each recorded call becomes a corpus case for the Play bundle:
-//   blocks     = the test's CSS input
-//   config     = the test's config without `content` (the bundle supplies its own)
+//   css        = the test's CSS input
+//   config     = the test's config without `content` (the candidates replace it)
 //   candidates = tailwind's default extractor over the `content` raw strings
 // Calls whose config contains functions, plugins or file-based content are skipped and counted.
 //
@@ -179,6 +179,11 @@ for (const c of calls) {
     skip('non-string-input')
     continue
   }
+  if (config.config !== undefined) {
+    // `tailwindcss({ config })`: the plugin's own form, not a config file
+    skip('config-key')
+    continue
+  }
   if (config.plugins?.length) {
     skip('plugins')
     continue
@@ -197,8 +202,8 @@ for (const c of calls) {
     skip('file-content')
     continue
   }
-  const kase = { name: `${c.file} ${c.test}`, config: JSON.parse(JSON.stringify(rest)), blocks: c.input, candidates }
-  const key = JSON.stringify([kase.config, kase.blocks, kase.candidates])
+  const kase = { name: `${c.file} ${c.test}`, config: JSON.parse(JSON.stringify(rest)), css: c.input, candidates }
+  const key = JSON.stringify([kase.config, kase.css, kase.candidates])
   if (seen.has(key)) {
     skip('duplicate')
     continue

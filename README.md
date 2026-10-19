@@ -1,12 +1,13 @@
 # tailwindcss-v3-rs
 
-Rust-порт компилятора Tailwind CSS **v3.4.16** в том виде, в каком его запускает Play-бандл
-(`cdn.tailwindcss.com` / `tailwind.3.4.16.min.js`): `postcss([tailwindcss(config), autoprefixer({ remove: false })])`
-с зашитым в бандл списком браузеров. Цель — побайтно тот же CSS, что кладёт в `<head>` Play-скрипт,
-без Node и JS-движка в рантайме.
+Rust-порт компилятора Tailwind CSS **v3.4.19**: `postcss([tailwindcss(config), autoprefixer({ remove: false })])`
+над таблицей стилей с директивами `@tailwind`. Цель — побайтно тот же CSS, что дают npm-пакеты, без
+Node и JS-движка в рантайме. autoprefixer работает на данных Play-бандла (`cdn.tailwindcss.com`):
+его таблица префиксов и 14 целевых браузеров.
 
-Потребитель — сборщик Chatium (`chatium-ugc-compiler`): он генерирует CSS страницы при сборке и
-отдаёт его `<link>`-ом вместо Play-скрипта.
+Потребитель — сборщик Chatium (`chatium-ugc-compiler`): автор пишет входной `.css` с
+`@config` и `@tailwind`, сборщик резолвит конфиг, собирает кандидатов из графа импортов и
+генерирует CSS при сборке.
 
 ## API
 
@@ -16,8 +17,8 @@ tailwindcss-v3 = { git = "https://github.com/chatium/tailwindcss-v3-rs", rev = "
 ```
 
 ```rust
-// объект `tailwind.config` как JSON (serde_json с preserve_order; целочисленные ключи
-// переставляются по правилам JS внутри from_json)
+// конфиг, на который указывает `@config`, как JSON (serde_json с preserve_order; целочисленные
+// ключи переставляются по правилам JS внутри from_json)
 let config = tailwindcss_v3::Config::from_json(serde_json::json!({
     "theme": { "extend": { "colors": { "brand": "#123456" } } }
 }))?;
@@ -25,61 +26,33 @@ let config = tailwindcss_v3::Config::from_json(serde_json::json!({
 // кандидаты из любых исходников (tsx, ts, vue, html, …) — порт default extractor v3
 let candidates = tailwindcss_v3::extract_candidates(source);
 
-// `@tailwind base;@tailwind components;@tailwind utilities;` + blocks → tailwind → autoprefixer
-let css = tailwindcss_v3::generate(&config, blocks, candidates)?;
+// таблица стилей → tailwind → autoprefixer
+let css = tailwindcss_v3::generate(&config, r#"
+@import url(https://fonts.googleapis.com/css2?family=Inter);
+@config "./tailwind.config.json";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@layer components { .btn { @apply px-4 py-2 bg-brand; } }
+"#, candidates)?;
 ```
 
-### Много генераций по одному набору кандидатов
-
-```rust
-// один раз на аккаунт: нормализация, дедупликация, отсев кандидатов без корня утилиты
-let candidates = tailwindcss_v3::Candidates::new(all_classes.iter().map(|s| s.as_str()));
-// один раз на конфиг: матчинг годных кандидатов по теме этого конфига
-let base = tailwindcss_v3::Generator::new(&base_config, &candidates);
-// остальные конфиги аккаунта — от базы: перематчиваются только кандидаты, чьи поиски в теме
-// дают другое (обычно несколько процентов); иначе — тот же Generator::new
-let generator = base.derive(&config);
-// на каждую настройку, параллельно (&self, Send + Sync)
-let css = generator.generate(blocks)?;
-let css = generator.generate_excluding(blocks, &skip)?; // = generate(config, blocks, все \ skip)
-```
-
-`generator.generate(blocks)` побайтно равен `generate(&config, blocks, все кандидаты)` для любых
-`blocks`, включая `@layer`-классы из блоков, `@apply`, порядок правил и ошибки:
-
-- `Candidates::new` оставляет для матчинга только кандидатов, у которых utility-часть (после
-  вариантов, `!` и `-`) — корень плагина конфига по умолчанию или произвольное свойство. Конфиг
-  без плагинов новых корней не добавляет. Если корни у конфига всё же другие (`prefix`, другой
-  `separator`), `Generator::new` сам откатывается на полный перебор.
-- Кандидат без правил на вывод не влияет: его следы в контексте либо отсутствуют, либо
-  порядковые (биты произвольных вариантов перед сортировкой перенумеровываются по имени).
-  Исключение — кэш единиц `min-*`/`max-*`, такие кандидаты держатся всегда.
-- Блоки меняют набор дающих правила кандидатов только своими `@layer`-классами: кандидаты с
-  такой utility-частью берутся из индекса по имени класса на каждый вызов.
-- Сгенерированная часть вывода обрабатывается один раз на генератор (первым `generate`), а
-  блоки вызова проходят проходы отдельно и печатаются между её частями. Условия, при которых
-  это равно полному прогону, проверяются на каждом вызове (границы склейки соседних правил,
-  `@defaults`, autoprefixer, выводимые raws стрингифаера, см. `Prefab` в `src/generator.rs`);
-  если условие не выполнено — полный прогон. Блоки с `@layer` всегда идут полным прогоном.
-- `derive` сравнивает чтения конфига каждым плагином при регистрации; если отличаются только
-  значения `values`/`modifiers` у `matchUtilities`, кандидат перематчивается, лишь когда
-  `coerceValue`/`getMatchingTypes` дают для него другое. Если различия глубже (`prefix`,
-  `separator`, `important`, `corePlugins`, варианты/`screens`, `darkMode`, `safelist`, …) —
-  тот же `Generator::new`.
-
-`Generator` заимствует `Config` и `Candidates` и держит контекст конфига и обработанную
-сгенерированную часть (~18 МБ на emi-test); если конфигов много, держите базу на всё время, а
-производные — только на время их настроек. Проверка — `tests/conformance.rs` (`generator_local`,
-`GENERATOR=1`) и дифференциальный фаззинг `generator_fuzz` в `tests/units.rs`.
-
-- `Config: Send + Sync + Clone`; один конфиг можно использовать из многих потоков.
-- `generate` принимает кандидатов как набор классов из DOM: порядок и дубли не важны, лишние
-  строки молча игнорируются. Кандидаты, на которых сам JS-tailwind падает с исключением
-  (например, `[&{]:flex`), отбрасываются: в бандле такой класс в DOM ломал бы генерацию целиком.
-- `Config::extract_candidates` — тот же extractor с `prefix`/`separator` конфига.
+- `generate(&config, css, candidates)` обрабатывает `css` как обычный вход v3: директивы
+  `@tailwind` раскрываются там, где написаны, допустим любой их поднабор (только
+  `@tailwind utilities` — тоже); `@import url()` и прочие at-rule (`@source`, `@theme`, `@plugin`)
+  остаются как написаны.
+- `@config` удаляется, как в v3 (конфиг передаётся аргументом); ошибки, не требующие файловой
+  системы, те же: второй `@config`, `@config` без пути в кавычках, абсолютный путь.
+- `candidates` — классы, найденные в контенте: порядок и дубли не важны, лишние строки молча
+  игнорируются. Кандидаты, на которых сам JS-tailwind падает с исключением (например,
+  `[&{]:flex`), отбрасываются: в JS такой класс в контенте ломал бы генерацию целиком.
+- `Config: Send + Sync + Clone`; `Config::extract_candidates` — тот же extractor с
+  `prefix`/`separator` конфига.
 - Ошибки (`Error`) повторяют tailwind/postcss: `name` (`CssSyntaxError`/`Error`), `reason`,
-  `message` ровно как в JS (`<css input>:1:62: The \`foo\` class does not exist…`), позиция
-  `line`/`column` во входе целиком; `position_in_blocks()` переводит её в координаты `blocks`.
+  `message` ровно как в JS для таблицы без `from` (`<css input>:3:6: The \`foo\` class does not
+  exist…`), позиция `line`/`column` (1-based, колонки в UTF-16) в `css`.
+- Модуль `postcss` публичный: `postcss::parse(&mut css, input)` и обход узлов — чтобы читать
+  `@tailwind`/`@config`/`@import` и их позиции.
 
 ## Устройство
 
@@ -90,43 +63,48 @@ let css = generator.generate_excluding(blocks, &skip)?; // = generate(config, bl
 | --- | --- |
 | `js` | значения JS: порядок ключей объекта, `Number#toString`, `Number()`, `parseFloat`, `Array#sort` V8 |
 | `postcss` | `postcss@8.4.49`: узлы в арене, итераторы `each`/`walk` с индексами, токенизатор, парсер, стрингифаер с выводом raws и `rawCache` |
-| `selector` | `postcss-selector-parser@6.1.2` (версия из бандла) с алиасингом узлов как в JS, `cssesc` |
+| `selector` | `postcss-selector-parser@6.1.2` с алиасингом узлов как в JS, `cssesc` |
 | `value_parser` | форк postcss-value-parser из tailwind и оригинальный 4.2.0 (для autoprefixer) |
 | `tw::config` | `config.full.js`, `resolveConfig`, `normalizeConfig`, `featureFlags`; функции темы — записанные шаблоны |
 | `tw::context`, `tw::core_plugins` | plugin API (`addUtilities`, `matchUtilities`, `addVariant`, `matchVariant`, …) и все core-плагины и варианты |
 | `tw::generate`, `tw::offsets`, `tw::format_variant_selector` | `generateRules`, сортировка `Offsets` (bigint-битовые маски), форматирование селекторов вариантов |
-| `tw::apply`, `tw::functions`, `tw::process` | `@apply`, `theme()`/`screen()`, `@layer`, `@screen`, defaults, collapse-проходы |
-| `autoprefixer` | `autoprefixer@10.4` на зашитых в бандл таблицах (37 признаков, 14 браузеров), `transition`, `@supports`, управляющие комментарии |
-| `extractor`, `jsregex` | default extractor v3 на собственном backtracking-движке регулярок с семантикой JS (UTF-16, lookahead, обратные ссылки) |
+| `tw::apply`, `tw::functions`, `tw::process` | `@config`, `@apply`, `theme()`/`screen()`, `@layer`, `@screen`, defaults, collapse-проходы |
+| `autoprefixer` | `autoprefixer@10.4` на таблицах Play-бандла (37 признаков, 14 браузеров), `transition`, `@supports`, управляющие комментарии |
+| `extractor`, `jsregex` | default extractor v3: сканеры для типичных строк и собственный backtracking-движок регулярок с семантикой JS (UTF-16, lookahead, обратные ссылки) для остальных |
 
-Данные (`src/tw/data/*`, `src/autoprefixer_data.json`) извлекаются из бандла и npm-пакета
-скриптом `tools/gen-data.mjs`: preflight — ровно та минифицированная строка, что в бандле.
+Данные `src/tw/data/*` берутся из npm-пакета скриптом `tools/gen-data.mjs` (preflight —
+`lib/css/preflight.css` как есть); `src/autoprefixer_data.json` извлечён из Play-бандла 3.4.16.
 
 ## Проверка
 
-Дифференциальная: эталон — сам Play-бандл в `node:vm` с заглушкой DOM (`tools/play.mjs`).
-`tools/gen-fixtures.mjs` прогоняет его по корпусу и пишет ожидаемый CSS в `tests/fixtures/`,
-`cargo test` прогоняет тот же корпус через порт и сравнивает побайтно.
+Дифференциальная: эталон — `tools/ref.mjs`, то есть `tailwindcss@3.4.19` + `autoprefixer@10.4.20`
+под `postcss@8.4.49` в Node. Таблица префиксов и браузеры autoprefixer подменены данными бандла,
+кандидаты передаются как raw-контент с экстрактором `split(' ')`, у каждого случая свежий контекст
+tailwind. Зависимости зафиксированы на версиях, которые воспроизводит порт (selector-parser 6.1.2,
+postcss-js 4.0.1, postcss-nested 6.2.0 — все в диапазонах 3.4.19). `tools/gen-fixtures.mjs`
+пишет ожидаемый CSS в `tests/fixtures/`, `cargo test` прогоняет тот же корпус через порт и
+сравнивает побайтно.
 
 | Корпус | Откуда | Случаев | Совпало |
 | --- | --- | ---: | ---: |
-| `basics` | ручные случаи: `@apply`, ошибки, слои, префикс, important, dark, container, произвольные значения | 14 | 14 |
+| `basics` | ручные случаи: `@apply`, ошибки, слои, префикс, important, dark, container, произвольные значения; подмножества директив, CSS до директив, `@import` первым, `@config`, неизвестные at-rule | 26 | 26 |
 | `classlist` | все 11 344 класса из `getClassList()` и все 71 вариант × выборка утилит | 117 | 117 |
-| `tailwind-tests` | входы из `tests/*.test.js` tailwindcss v3.4.16 (`tools/extract-tw-tests.mjs`) | 364 | 364 |
-| `regressions` | минимальные случаи найденных багов | 1 | 1 |
+| `tailwind-tests` | входы из `tests/*.test.js` tailwindcss v3.4.19 как есть (`tools/extract-tw-tests.mjs`) | 362 | 362 |
+| `regressions` | минимальные случаи найденных багов и изменений 3.4.17–3.4.19 | 3 | 3 |
 | боевой (локально) | 22 аккаунта Chatium, см. ниже | 823 | 823 |
 
 Плюс модульные дифференциальные тесты (`tests/units.rs`): селектор-парсер (1940 селекторов),
-круговой разбор postcss (923 входа), `resolveConfig`.
+круговой разбор postcss (923 входа), `resolveConfig`, фаззинг сканеров экстрактора против движка
+регулярок.
 
 ### Боевой корпус
 
-`tools/extract-corpus.mjs` собирает из `~/github/chatium/chatium.ru/*` и `chatium.ai/*` каждый
-различный набор «конфиг + блоки»: литералы `tailwind.config = {…}` и `<style type="text/tailwindcss">`
-вычисляются статически (константы файла подставляются), пары берутся по объемлющей функции.
-Кандидаты — `extract_candidates` по всем немедийным файлам аккаунта (без скрытых каталогов).
-Данные аккаунтов в репозиторий не попадают: корпус и эталоны лежат в `tests/corpus-local/` и
-`tests/fixtures-local/` (в `.gitignore`), тест `conformance_local` пропускается, если их нет.
+`tools/extract-corpus.mjs` собирает из `~/github/chatium/chatium.ru/*` и `chatium.ai/*` прежние
+Play-настройки (`tailwind.config = {…}` и `<style type="text/tailwindcss">`); вход —
+`@tailwind base;@tailwind components;@tailwind utilities;` + блоки настройки, кандидаты —
+`extract_candidates` по всем немедийным файлам аккаунта. Данные аккаунтов в репозиторий не
+попадают: корпус и эталоны лежат в `tests/corpus-local/` и `tests/fixtures-local/` (в
+`.gitignore`), тест `conformance_local` пропускается, если их нет.
 
 ```sh
 cd tools && npm ci
@@ -135,56 +113,39 @@ node gen-fixtures-local.mjs        # эталоны параллельно → t
 cargo test --release --test conformance conformance_local
 ```
 
-Статистика текущего прогона: 57 085 файлов, 1 356 наборов, из них 823 различных; пропущено
-29 конфигов и 60 блоков, зависящих от данных запроса (конфигов с функциями и плагинами в
-аккаунтах нет). Кандидатов на аккаунт — от 12 тыс. до 1 млн. В 6 наборах ожидается ошибка
-(неизвестный класс в `@apply`, синтаксис CSS) — порт выдаёт ту же. Кандидатов, на которых падал
-бы JS, в корпусе нет.
-
-`tools/check-extractor.mjs <dir>…` сверяет `extract_candidates` с extractor из npm
-`tailwindcss@3.4.16` пофайлово: на всех аккаунтах — 74 483 из 74 483 файлов (881 МБ) совпали.
+`tools/check-extractor.mjs <dir>…` сверяет `extract_candidates` с extractor из npm пофайлово:
+на всех аккаунтах — 74 483 из 74 483 файлов (881 МБ) совпали.
 
 ## Совместимость
 
 | Возможность | Статус |
 | --- | --- |
-| Все core-плагины и варианты v3.4.16, произвольные значения/свойства/варианты, модификаторы | ✅ |
-| `@tailwind`, `@layer`, `@apply` (вкл. `!important`, вложенные `@apply`, циклы), `theme()`, `screen()`, `@screen` | ✅ |
+| Все core-плагины и варианты v3.4.19, произвольные значения/свойства/варианты, модификаторы | ✅ |
+| `@tailwind` (любой поднабор, в любом месте), `@layer`, `@apply` (вкл. `!important`, вложенные `@apply`, циклы), `theme()`, `screen()`, `@screen`, `@config` | ✅ |
 | `prefix`, `important` (bool/селектор), `separator`, `darkMode` (`media`/`class`/`selector`/`variant`), `corePlugins`, `safelist` (строки), `blocklist`, `presets`, `future`/`experimental` | ✅ |
-| autoprefixer с данными бандла, включая каскадные отступы и `@supports` | ✅ |
-| Ошибки: синтаксис CSS, `@apply` неизвестного класса, неверный `theme()`-путь, `@screen` | ✅ (текст и позиция как в JS) |
-| Функции и плагины в конфиге, `safelist` с регулярками | ❌ конфиг — только JSON |
+| autoprefixer с данными Play-бандла, включая каскадные отступы и `@supports` | ✅ |
+| Ошибки: синтаксис CSS, `@apply` неизвестного класса, неверный `theme()`-путь, `@screen`, `@config` | ✅ (текст и позиция как в JS) |
+| Функции и плагины в конфиге, `safelist` с регулярками, ключ `config` | ❌ конфиг — только JSON |
+| `@config`: проверка, что файл существует | ❌ конфиг резолвит вызывающий |
 | Классы-ключи прототипа `Object` (`text-constructor`, `bg-toString`…) | ❌ в JS дают мусорный CSS или падение; порт их игнорирует |
 | autoprefixer: `/* autoprefixer grid: … */` | ❌ сетки в данных бандла нет, управление гридом не портировано |
+| postcss 8.5 / selector-parser 6.1.4 (свежая установка npm) | ❌ порт следует postcss 8.4.49 и selector-parser 6.1.2 |
 
 ### Расхождения по построению
 
 - Кандидат, на котором JS-tailwind бросает исключение (кроме `CssSyntaxError`), порт отбрасывает,
-  а не падает. Генератор эталонов находит такие кандидаты бисекцией и исключает их из запуска бандла.
+  а не падает. Генератор эталонов находит такие кандидаты бисекцией и исключает их из запуска.
 - `extract_candidates` возвращает `&str`, поэтому кандидат, который в JS разрезал бы суррогатную
   пару UTF-16, представить нельзя — он пропускается.
 
 ## Производительность
 
-Apple M-серии, `--release`.
+Apple M1 Max, `--release`, один поток.
 
-- `generate` на аккаунте с ~1 млн кандидатов — ~1,4 с; ~300 тыс. — ~0,4 с; типичный набор
-  (10–50 тыс.) — десятки миллисекунд.
-- `Candidates` + `Generator` (остальные конфиги — `derive` от самого частого), все настройки
-  аккаунта на 10 потоках, mimalloc (`examples/bench_generator.rs`, `DERIVE=1`; `PLAIN=1` —
-  `generate` на каждую настройку):
-
-  | Аккаунт | Кандидатов | Настроек / конфигов | N × `generate` | `Candidates` + `Generator` |
-  | --- | ---: | ---: | ---: | ---: |
-  | emi-test | 372 тыс. | 388 / 175 | 15,7 с | 1,62 с (×9,7) |
-  | dudinkonstantin | 1 008 тыс. | 82 / 11 | 10,0 с | 0,37 с (×27) |
-  | chatium.ru | 298 тыс. | 96 / 63 | 3,2 с | 0,66 с (×4,9) |
-  | familycontact | 201 тыс. | 64 / 46 | 1,3 с | 0,29 с (×4,7) |
-
-- `extract_candidates`: собственные сканеры вместо движка регулярок там, где в «слове» нет `[`
-  (сверка с движком — фаззинг в `tests/units.rs`). 83 МБ исходников dudinkonstantin — 6,0 с
-  (было 27,5 с), все аккаунты (514 МБ) — 21 с (было 82 с), вывод побайтно тот же. Результаты по
-  строкам кэшируются в потоке.
+- `generate`: сотни–тысячи кандидатов — единицы–десятки миллисекунд; на аккаунте с ~1 млн
+  кандидатов — ~1,4 с.
+- `extract_candidates`: 83 МБ исходников dudinkonstantin — 5,6 с; результаты по строкам
+  кэшируются в потоке.
 
 ## Лицензия
 

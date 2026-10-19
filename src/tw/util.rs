@@ -211,7 +211,6 @@ const AUTO_VAR_INJECTION_EXCEPTIONS: &[&str] = &[
 
 static URL_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"url\([^\n\r\x{2028}\x{2029}]*?\)").unwrap());
 static UNDERSCORES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([^\\])_+").unwrap());
-static MATH_FN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(calc|min|max|clamp)\([^\n\r\x{2028}\x{2029}]+\)").unwrap());
 
 /// `normalize(value, context, isRoot)`
 pub fn normalize(value: &str, property: Option<&str>) -> String {
@@ -260,7 +259,7 @@ fn normalize_inner(value: &str, property: Option<&str>, is_root: bool) -> String
     if is_root {
         v = js::trim(&v).to_string();
     }
-    normalize_math_operator_spacing(&v)
+    add_whitespace_around_math_operators(&v)
 }
 
 /// `normalizeAttributeSelectors(value)`
@@ -306,90 +305,89 @@ fn normalize_attr_match(m: &str) -> String {
     format!("=\"{inner}\"")
 }
 
-const PREVENT_FORMATTING_KEYWORDS: &[&str] = &[
-    "min-content",
-    "max-content",
-    "fit-content",
-    "safe-area-inset-top",
-    "safe-area-inset-right",
-    "safe-area-inset-bottom",
-    "safe-area-inset-left",
-    "titlebar-area-x",
-    "titlebar-area-y",
-    "titlebar-area-width",
-    "titlebar-area-height",
-    "keyboard-inset-top",
-    "keyboard-inset-right",
-    "keyboard-inset-bottom",
-    "keyboard-inset-left",
-    "keyboard-inset-width",
-    "keyboard-inset-height",
-    "radial-gradient",
-    "linear-gradient",
-    "conic-gradient",
-    "repeating-radial-gradient",
-    "repeating-linear-gradient",
-    "repeating-conic-gradient",
-    "anchor-size",
-];
+const MATH_FUNCTIONS: [&str; 19] =
+    ["calc", "min", "max", "clamp", "mod", "rem", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "pow", "sqrt", "hypot", "log", "exp", "round"];
 
-fn normalize_math_operator_spacing(value: &str) -> String {
-    MATH_FN
-        .replace_all(value, |caps: &regex::Captures| {
-            let m: Vec<u16> = caps.get(0).unwrap().as_str().encode_utf16().collect();
-            let mut result: Vec<u16> = Vec::new();
-            let peek = |i: usize, word: &str| word.encode_utf16().enumerate().all(|(j, c)| m.get(i + j) == Some(&c));
-            let consume_until = |i: &mut usize, chars: &[u16]| -> Vec<u16> {
-                let mut min_index = usize::MAX;
-                for &c in chars {
-                    if let Some(idx) = m[*i..].iter().position(|x| *x == c) {
-                        let idx = idx + *i;
-                        if idx < min_index {
-                            min_index = idx;
-                        }
-                    }
-                }
-                let end = if min_index == usize::MAX { m.len() } else { min_index };
-                let r = m[*i..end].to_vec();
-                *i += r.len();
-                *i = i.wrapping_sub(1);
-                r
-            };
-            let last_char = |result: &[u16]| -> Option<u16> {
-                let s = String::from_utf16_lossy(result);
-                let t = s.trim_end_matches(js::is_js_whitespace);
-                t.encode_utf16().last()
-            };
-            let mut i = 0usize;
-            while i < m.len() {
-                let ch = m[i];
-                if peek(i, "var") {
-                    let r = consume_until(&mut i, &[b')' as u16, b',' as u16]);
-                    result.extend(r);
-                } else if let Some(k) = PREVENT_FORMATTING_KEYWORDS.iter().find(|k| peek(i, k)) {
-                    result.extend(k.encode_utf16());
-                    i += k.len() - 1;
-                } else if peek(i, "theme") {
-                    let r = consume_until(&mut i, &[b')' as u16]);
-                    result.extend(r);
-                } else if peek(i, "[") {
-                    let r = consume_until(&mut i, &[b']' as u16]);
-                    result.extend(r);
-                } else if [b'+', b'-', b'*', b'/'].iter().any(|c| *c as u16 == ch)
-                    && !last_char(&result).is_some_and(|l| [b'(', b'+', b'-', b'*', b'/', b','].iter().any(|c| *c as u16 == l))
-                {
-                    result.push(b' ' as u16);
-                    result.push(ch);
-                    result.push(b' ' as u16);
+/// `addWhitespaceAroundMathOperators(input)` (`util/math-operators`), on UTF-16 code units
+pub fn add_whitespace_around_math_operators(input: &str) -> String {
+    if !MATH_FUNCTIONS.iter().any(|f| input.contains(f)) {
+        return input.to_string();
+    }
+    const SP: u16 = b' ' as u16;
+    let digit = |c: u16| (b'0' as u16..=b'9' as u16).contains(&c);
+    let lower = |c: u16| (b'a' as u16..=b'z' as u16).contains(&c);
+    let upper = |c: u16| (b'A' as u16..=b'Z' as u16).contains(&c);
+    let op = |c: u16| c == b'+' as u16 || c == b'*' as u16 || c == b'/' as u16 || c == b'-' as u16;
+    let s: Vec<u16> = input.encode_utf16().collect();
+    let mut result: Vec<u16> = Vec::with_capacity(s.len() + 8);
+    // `formattable[0]` is the top of this stack
+    let mut formattable: Vec<bool> = Vec::new();
+    let (mut value_pos, mut last_value_pos): (Option<usize>, Option<usize>) = (None, None);
+    for i in 0..s.len() {
+        let ch = s[i];
+        if digit(ch) {
+            value_pos = Some(i);
+        } else if value_pos.is_some() && (ch == b'%' as u16 || lower(ch) || upper(ch)) {
+            value_pos = Some(i);
+        } else {
+            last_value_pos = value_pos;
+            value_pos = None;
+        }
+        let top = formattable.last() == Some(&true);
+        if ch == b'(' as u16 {
+            result.push(ch);
+            let mut start = i;
+            for j in (0..i).rev() {
+                if digit(s[j]) || lower(s[j]) {
+                    start = j;
                 } else {
-                    result.push(ch);
+                    break;
                 }
-                i = i.wrapping_add(1);
             }
-            let s = String::from_utf16_lossy(&result);
-            collapse_ws(&s)
-        })
-        .into_owned()
+            let name = String::from_utf16_lossy(&s[start..i]);
+            if MATH_FUNCTIONS.contains(&name.as_str()) || (top && name.is_empty()) {
+                formattable.push(true);
+            } else {
+                formattable.push(false);
+            }
+        } else if ch == b')' as u16 {
+            result.push(ch);
+            formattable.pop();
+        } else if ch == b',' as u16 && top {
+            result.extend_from_slice(&[b',' as u16, SP]);
+        } else if ch == SP && top && result.last() == Some(&SP) {
+        } else if op(ch) && top {
+            let mut end = result.len();
+            while end > 0 && char::from_u32(result[end - 1] as u32).is_some_and(js::is_js_whitespace) {
+                end -= 1;
+            }
+            let prev = if end >= 1 { Some(result[end - 1]) } else { None };
+            let prev_prev = if end >= 2 { Some(result[end - 2]) } else { None };
+            let next = s.get(i + 1).copied();
+            if prev.is_some_and(|p| p == b'e' as u16 || p == b'E' as u16) && prev_prev.is_some_and(digit) {
+                result.push(ch);
+            } else if prev.is_some_and(op) {
+                result.push(ch);
+            } else if prev == Some(b'(' as u16) || prev == Some(b',' as u16) {
+                result.push(ch);
+            } else if i >= 1 && s[i - 1] == SP {
+                result.extend_from_slice(&[ch, SP]);
+            } else if prev.is_some_and(digit)
+                || next.is_some_and(digit)
+                || prev == Some(b')' as u16)
+                || next == Some(b'(' as u16)
+                || next.is_some_and(op)
+                || (i >= 1 && last_value_pos == Some(i - 1))
+            {
+                result.extend_from_slice(&[SP, ch, SP]);
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    String::from_utf16_lossy(&result)
 }
 
 /// `.replace(/\s+/g, ' ')`

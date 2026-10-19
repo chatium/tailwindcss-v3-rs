@@ -1,5 +1,6 @@
-//! `cargo run --release --example bench_generate -- <name substring>`: times `generate` on local
-//! corpus cases (tests/corpus-local/accounts.json).
+//! `cargo run --release --example bench_generate -- <name substring>`: times `generate` on a local
+//! corpus case (tests/corpus-local/accounts.json; the stylesheet is the three `@tailwind`
+//! directives + the case's blocks).
 fn main() {
     let filter = std::env::args().nth(1).unwrap_or_default();
     let corpus: serde_json::Value =
@@ -13,7 +14,8 @@ fn main() {
         let t = std::time::Instant::now();
         let config = tailwindcss_v3::Config::from_json(c["config"].clone()).unwrap();
         let t1 = t.elapsed();
-        let r = tailwindcss_v3::generate(&config, c["blocks"].as_str().unwrap(), cands.iter().copied());
+        let css = format!("@tailwind base;@tailwind components;@tailwind utilities;{}", c["blocks"].as_str().unwrap());
+        let r = tailwindcss_v3::generate(&config, &css, cands.iter().copied());
         eprintln!("{:>10?} (config {:?}) {} candidates → {} bytes  {name}", t.elapsed(), t1, cands.len(), r.map(|s| s.len()).unwrap_or(0));
         break;
     }

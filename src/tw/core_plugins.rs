@@ -139,7 +139,7 @@ impl Cup {
                     }),
                 ));
             }
-            let theme_values = api.theme_values(key);
+            let theme_values = api.theme(key);
             let values = if self.filter_default {
                 let mut o = Object::new();
                 if let Value::Obj(src) = if theme_values.is_nullish() { Object::new().into_value() } else { theme_values.clone() } {
@@ -174,11 +174,11 @@ fn with_alpha(value: &Value, property: &[&str], variable: &str) -> Value {
 }
 
 fn color_values(api: &mut PluginApi, key: &str) -> Value {
-    flatten_color_palette(&api.theme_values(key)).into_value()
+    flatten_color_palette(&api.theme(key)).into_value()
 }
 
 fn color_values_no_default(api: &mut PluginApi, key: &str) -> Value {
-    without_default(flatten_color_palette(&api.theme_values(key)))
+    without_default(flatten_color_palette(&api.theme(key)))
 }
 
 /// `matchUtilities({ [name]: value => ({ [prop]: toColorValue(value) }) }, { values, type: ['color', 'any'] })`
@@ -298,7 +298,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
         }),
         ("boxSizing", |api| add_utils(api, statics(&[(".box-border", &[("box-sizing", "border-box")]), (".box-content", &[("box-sizing", "content-box")])]))),
         ("lineClamp", |api| {
-            let values = api.theme_values("lineClamp");
+            let values = api.theme("lineClamp");
             api.match_utilities(
                 vec![(
                     "line-clamp",
@@ -740,7 +740,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
             Ok(())
         }),
         ("divideOpacity", |api| {
-            let values = api.theme_values("divideOpacity");
+            let values = api.theme("divideOpacity");
             api.match_utilities(
                 vec![("divide-opacity", rf(|value, _| obj(vec![("& > :not([hidden]) ~ :not([hidden])", obj(vec![("--tw-divide-opacity", value.clone())]))])))],
                 values_only(values),
@@ -1173,7 +1173,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
             Ok(())
         }),
         ("placeholderOpacity", |api| {
-            let values = api.theme_values("placeholderOpacity");
+            let values = api.theme("placeholderOpacity");
             api.match_utilities(
                 vec![("placeholder-opacity", rf(|value, _| obj(vec![("&::placeholder", obj(vec![("--tw-placeholder-opacity", value.clone())]))])))],
                 values_only(values),
@@ -1330,7 +1330,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
         ("transitionProperty", |api| {
             let tf = api.theme("transitionTimingFunction.DEFAULT");
             let dur = api.theme("transitionDuration.DEFAULT");
-            let values = api.theme_values("transitionProperty");
+            let values = api.theme("transitionProperty");
             api.match_utilities(
                 vec![(
                     "transition",
@@ -1368,7 +1368,7 @@ pub fn core_plugins() -> Vec<(&'static str, CorePlugin)> {
 fn preflight(api: &mut PluginApi) -> Result<(), String> {
     let css = &mut api.ctx.css;
     let root = crate::postcss::parse(css, include_str!("data/preflight.css")).map_err(|e| e.message())?;
-    let comment = css.comment("! tailwindcss v3.4.16 | MIT License | https://tailwindcss.com");
+    let comment = css.comment("! tailwindcss v3.4.19 | MIT License | https://tailwindcss.com");
     let mut styles = vec![Style::Node(comment)];
     for &n in css.children(root) {
         styles.push(Style::Node(n));
@@ -1480,7 +1480,7 @@ fn accessibility(api: &mut PluginApi) -> Result<(), String> {
 
 fn border_spacing(api: &mut PluginApi) -> Result<(), String> {
     api.add_defaults("border-spacing", obj(vec![("--tw-border-spacing-x", Value::Num(0.0)), ("--tw-border-spacing-y", Value::Num(0.0))]))?;
-    let values = api.theme_values("borderSpacing");
+    let values = api.theme("borderSpacing");
     let d = || ("@defaults border-spacing", Object::new().into_value());
     let bs = || ("border-spacing", s("var(--tw-border-spacing-x) var(--tw-border-spacing-y)"));
     api.match_utilities(
@@ -1506,7 +1506,7 @@ fn animation(api: &mut PluginApi) -> Result<(), String> {
             keyframes.insert(k.clone(), inner.into_value());
         }
     }
-    let values = api.theme_values("animation");
+    let values = api.theme("animation");
     let keyframes = Arc::new(keyframes);
     api.match_utilities(
         vec![(
@@ -1558,7 +1558,7 @@ fn touch_action(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn space(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme_values("space");
+    let values = api.theme("space");
     let zero = |v: &Value| if *v == s("0") { "0px".to_string() } else { v.to_js_string() };
     api.match_utilities(
         vec![
@@ -1603,7 +1603,7 @@ fn space(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn divide_width(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme_values("divideWidth");
+    let values = api.theme("divideWidth");
     let zero = |v: &Value| if *v == s("0") { "0px".to_string() } else { v.to_js_string() };
     let d = || ("@defaults border-width", Object::new().into_value());
     api.match_utilities(
@@ -1683,7 +1683,7 @@ fn gradient_color_stops(api: &mut PluginApi) -> Result<(), String> {
     )?;
     let transparent_to = |v: &Value| with_alpha_value(v, &Value::Num(0.0), &s("rgb(255 255 255 / 0)")).to_js_string();
     let values = color_values(api, "gradientColorStops");
-    let positions = api.theme_values("gradientColorStopPositions");
+    let positions = api.theme("gradientColorStopPositions");
     let d = || ("@defaults gradient-color-stops", Object::new().into_value());
     let color_opts = || opts(values.clone(), &["color", "any"]);
     let pos_opts = || opts(positions.clone(), &["length", "percentage"]);
@@ -1733,7 +1733,7 @@ fn gradient_color_stops(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn font_family(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme_values("fontFamily");
+    let values = api.theme("fontFamily");
     api.match_utilities(
         vec![(
             "font",
@@ -1765,8 +1765,8 @@ fn font_family(api: &mut PluginApi) -> Result<(), String> {
 }
 
 fn font_size(api: &mut PluginApi) -> Result<(), String> {
-    let values = api.theme_values("fontSize");
-    let modifiers = api.theme_values("lineHeight");
+    let values = api.theme("fontSize");
+    let modifiers = api.theme("lineHeight");
     api.match_utilities(
         vec![(
             "text",
@@ -1828,7 +1828,7 @@ fn box_shadow(api: &mut PluginApi) -> Result<(), String> {
         "box-shadow",
         objs(&[("--tw-ring-offset-shadow", "0 0 #0000"), ("--tw-ring-shadow", "0 0 #0000"), ("--tw-shadow", "0 0 #0000"), ("--tw-shadow-colored", "0 0 #0000")]),
     )?;
-    let values = api.theme_values("boxShadow");
+    let values = api.theme("boxShadow");
     let default_box_shadow = "var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)";
     api.match_utilities(
         vec![(
@@ -1885,7 +1885,7 @@ fn ring_width(api: &mut PluginApi) -> Result<(), String> {
             ("--tw-shadow-colored", s("0 0 #0000")),
         ]),
     )?;
-    let values = api.theme_values("ringWidth");
+    let values = api.theme("ringWidth");
     api.match_utilities(
         vec![(
             "ring",
@@ -1913,7 +1913,7 @@ enum FilterKind {
 }
 
 fn filter_fn(api: &mut PluginApi, name: &'static str, key: &str, var: &'static str, kind: FilterKind, backdrop: bool) -> Result<(), String> {
-    let values = api.theme_values(key);
+    let values = api.theme(key);
     let kind = Arc::new(kind);
     let rule = rf(move |value, _| {
         let v = match &*kind {
@@ -2350,9 +2350,9 @@ pub fn supports_variants(api: &mut PluginApi) -> Result<(), String> {
             VarValue::Other(v) if v.is_undefined() => String::new(),
             v => var_value_string(v),
         };
-        let mut check = normalize(&raw, None);
-        // /^\w*\s*\(/
-        let w = check.bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'_').count();
+        let mut check = if raw.starts_with("--") { raw.clone() } else { normalize(&raw, None) };
+        // /^[\w-]*\s*\(/
+        let w = check.bytes().take_while(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-').count();
         let rest = check[w..].trim_start_matches(crate::js::is_js_whitespace);
         let is_raw = rest.starts_with('(');
         if is_raw {

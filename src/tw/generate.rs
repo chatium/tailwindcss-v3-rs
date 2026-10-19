@@ -20,49 +20,6 @@ fn is_arbitrary_value(s: &str) -> bool {
     s.starts_with('[') && s.ends_with(']')
 }
 
-/// The class part of a candidate (`resolveMatches`: last top-level part, without `!`).
-pub fn class_part<'a>(candidate: &'a str, separator: &str) -> &'a str {
-    let parts = split_at_top_level_only(candidate, separator);
-    let last = parts.last().copied().unwrap_or(candidate);
-    last.strip_prefix('!').unwrap_or(last)
-}
-
-/// Whether `resolveMatchedPlugins(classCandidate)` yields anything given the candidate rule map
-/// keys (`has_key`); arbitrary properties are assumed to match. A candidate for which this is
-/// false resolves to nothing and leaves no trace in the context.
-pub fn has_plugins(class_candidate: &str, prefix: &str, has_key: impl Fn(&str) -> bool) -> bool {
-    if has_key(class_candidate) || is_arbitrary_value(class_candidate) {
-        return true;
-    }
-    let mut candidate_prefix = class_candidate.to_string();
-    let has_matching_prefix = candidate_prefix.starts_with(prefix) || candidate_prefix.starts_with(&format!("-{prefix}"));
-    if candidate_prefix.as_bytes().get(prefix.len()) == Some(&b'-') && has_matching_prefix {
-        candidate_prefix = format!("{prefix}{}", &candidate_prefix[prefix.len() + 1..]);
-        if has_key(&candidate_prefix) {
-            return true;
-        }
-    }
-    candidate_permutations(&candidate_prefix).iter().any(|(p, _)| has_key(p))
-}
-
-/// The (candidate rule map key, modifier) pairs `resolveMatchedPlugins(classCandidate)` looks up,
-/// in order (the arbitrary property, which needs no key, left out).
-pub fn lookup_plan(class_candidate: &str, prefix: &str) -> Vec<(String, String)> {
-    let mut out = vec![(class_candidate.to_string(), "DEFAULT".to_string())];
-    let mut candidate_prefix = class_candidate.to_string();
-    let mut negative = false;
-    let has_matching_prefix = candidate_prefix.starts_with(prefix) || candidate_prefix.starts_with(&format!("-{prefix}"));
-    if candidate_prefix.as_bytes().get(prefix.len()) == Some(&b'-') && has_matching_prefix {
-        negative = true;
-        candidate_prefix = format!("{prefix}{}", &candidate_prefix[prefix.len() + 1..]);
-        out.push((candidate_prefix.clone(), "-DEFAULT".to_string()));
-    }
-    for (p, m) in candidate_permutations(&candidate_prefix) {
-        out.push((p, if negative { format!("-{m}") } else { m }));
-    }
-    out
-}
-
 /// `candidatePermutations(candidate)`
 fn candidate_permutations(candidate: &str) -> Vec<(String, String)> {
     let b = candidate.as_bytes();
@@ -180,7 +137,13 @@ impl<'c> Context<'c> {
                     SFlow::Continue
                 });
                 update_all_classes(&mut sel, ast, &|c| if c == class_candidate { format!("!{c}") } else { c.to_string() });
-                css[r].selector = sel.to_string(ast);
+                let new_selector = sel.to_string(ast);
+                // 3.4.18: rules left without a selector go
+                if crate::js::trim(&new_selector).is_empty() {
+                    css.remove(r);
+                    return Flow::Continue;
+                }
+                css[r].selector = new_selector;
                 css.walk_decls(r, &mut |css, d| {
                     css[d].important = true;
                     Flow::Continue
@@ -190,7 +153,11 @@ impl<'c> Context<'c> {
             if let Some(e) = err {
                 return Err(e);
             }
-            let first = self.css.first(container).unwrap();
+            // `container.nodes[0]` is undefined when the rule itself went: the JS build throws
+            // on it right after
+            let Some(first) = self.css.first(container) else {
+                return Err("Cannot read properties of undefined (reading 'clone')".into());
+            };
             result.push((Meta { important: true, ..meta }, first));
         }
         Ok(result)

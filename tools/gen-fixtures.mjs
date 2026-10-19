@@ -1,13 +1,15 @@
-// Runs the reference (the Play CDN bundle in node:vm) over every case in tests/corpus/*.json and
-// writes the expected output into tests/fixtures/<name>.json.
+// Runs the reference (tools/ref.mjs: tailwindcss 3.4.19 + autoprefixer under postcss) over every
+// case in tests/corpus/*.json and writes the expected output into tests/fixtures/<name>.json.
 //
-// A case is { config, blocks, candidates }. Expected output is { css } or { error }.
-// Candidates that make the bundle itself throw (the JS build crashes on them; the port drops
+// A case is { config, css, candidates }. Expected output is { css } or { error }.
+// Candidates that make tailwind itself throw (the JS build crashes on them; the port drops
 // them) are found by bisection and excluded from the reference run; they stay in the case
 // (`dropped` lists them) so the port is checked to ignore them.
+//
+//   node tools/gen-fixtures.mjs [corpus name…]
 import fs from 'node:fs'
 import path from 'node:path'
-import { runPlay } from './play.mjs'
+import { runRef } from './ref.mjs'
 
 const corpusDir = new URL('../tests/corpus/', import.meta.url).pathname
 const fixturesDir = new URL('../tests/fixtures/', import.meta.url).pathname
@@ -15,53 +17,49 @@ fs.mkdirSync(fixturesDir, { recursive: true })
 
 const only = process.argv.slice(2)
 
-async function crashers(c) {
-  // bisect candidates whose presence alone makes the bundle throw a non-CssSyntaxError
-  const bad = []
-  async function crashes(list) {
-    const r = await runPlay({ config: c.config, blocks: c.blocks, candidates: list })
-    return r.error && r.error.name !== 'CssSyntaxError'
-  }
-  async function search(list) {
-    if (list.length === 0) return
-    if (!(await crashes(list))) return
-    if (list.length === 1) {
-      bad.push(list[0])
-      return
+/** The expected output, with the candidates that crash tailwind on their own left out. */
+export async function reference(input) {
+  let r = await runRef(input)
+  const dropped = []
+  if (r.error && r.error.name !== 'CssSyntaxError' && input.candidates.length) {
+    // is it the candidates? (an error without any candidates is a genuine expected error)
+    const base = await runRef({ ...input, candidates: [] })
+    if (!base.error) {
+      const crashes = async list => {
+        const x = await runRef({ ...input, candidates: list })
+        return x.error && x.error.name !== 'CssSyntaxError'
+      }
+      const search = async list => {
+        if (!list.length || !(await crashes(list))) return
+        if (list.length === 1) return void dropped.push(list[0])
+        const mid = list.length >> 1
+        await search(list.slice(0, mid))
+        await search(list.slice(mid))
+      }
+      await search(input.candidates)
+      r = await runRef({ ...input, candidates: input.candidates.filter(x => !dropped.includes(x)) })
     }
-    const mid = list.length >> 1
-    await search(list.slice(0, mid))
-    await search(list.slice(mid))
   }
-  await search(c.candidates)
-  return bad
+  return { expected: r, dropped }
 }
 
-for (const file of fs.readdirSync(corpusDir).sort()) {
-  if (!file.endsWith('.json')) continue
-  const name = path.basename(file, '.json')
-  if (only.length && !only.includes(name)) continue
-  const cases = JSON.parse(fs.readFileSync(corpusDir + file, 'utf8'))
-  const out = []
-  let dropped = 0
-  for (const c of cases) {
-    const input = { config: c.config ?? {}, blocks: c.blocks ?? '', candidates: c.candidates ?? [] }
-    let r = await runPlay(input)
-    let drop = []
-    if (r.error && r.error.name !== 'CssSyntaxError' && input.candidates.length) {
-      // is it the candidates? (an error without any candidates is a genuine expected error)
-      const base = await runPlay({ ...input, candidates: [] })
-      if (!base.error) {
-        drop = await crashers(input)
-        if (drop.length) {
-          const kept = input.candidates.filter(x => !drop.includes(x))
-          r = await runPlay({ ...input, candidates: kept })
-          dropped += drop.length
-        }
-      }
+if (import.meta.url === `file://${process.argv[1]}`) {
+  for (const file of fs.readdirSync(corpusDir).sort()) {
+    if (!file.endsWith('.json')) continue
+    const name = path.basename(file, '.json')
+    if (only.length && !only.includes(name)) continue
+    const cases = JSON.parse(fs.readFileSync(corpusDir + file, 'utf8'))
+    const out = []
+    let dropped = 0
+    for (const c of cases) {
+      const input = { config: c.config ?? {}, css: c.css ?? '', candidates: c.candidates ?? [] }
+      const r = await reference(input)
+      dropped += r.dropped.length
+      out.push({ ...c, expected: r.expected, ...(r.dropped.length ? { dropped: r.dropped } : {}) })
     }
-    out.push({ ...c, ...input, ...(drop.length ? { dropped: drop } : {}), expected: r })
+    fs.writeFileSync(fixturesDir + name + '.json', JSON.stringify(out))
+    const errors = out.filter(c => c.expected.error).length
+    console.log(`${name}: ${out.length} cases, ${errors} expected errors, ${dropped} crashing candidates dropped`)
   }
-  fs.writeFileSync(fixturesDir + name + '.json', JSON.stringify(out))
-  console.log(`${name}: ${out.length} cases${dropped ? `, ${dropped} crashing candidates dropped` : ''}`)
+  process.exit(0)
 }

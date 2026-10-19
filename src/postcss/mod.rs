@@ -13,7 +13,7 @@ mod tokenize;
 
 pub use list::{comma, space, split};
 pub use parser::parse;
-pub use stringify::{INFERRED_RAWS, infer_kind, infer_raw, raw, raw_cache, set_raw_cache, to_string, to_string_parts, to_string_spliced};
+pub use stringify::{raw, to_string};
 
 use std::sync::Arc;
 
@@ -315,8 +315,6 @@ impl Flow {
     }
 }
 
-/// The node arena. `freeze` moves the nodes into a shared, immutable layer, so a clone after it
-/// is cheap: frozen nodes are copied into the clone only when it mutates them.
 /// See `Css::walk_down`.
 pub struct WalkDown<'a> {
     css: &'a Css,
@@ -343,169 +341,42 @@ impl Iterator for WalkDown<'_> {
     }
 }
 
+/// The node arena.
 #[derive(Default, Clone)]
 pub struct Css {
-    frozen: Option<std::sync::Arc<Frozen>>,
-    /// per frozen node: index of its mutable copy in `copies`, or `u32::MAX`
-    copied: Vec<u32>,
-    copies: Vec<Node>,
-    /// nodes with ids from the frozen length on
     nodes: Vec<Node>,
-}
-
-/// One frozen layer: the nodes with ids `start..`, and replacements for lower ids that were
-/// mutated before this layer was frozen.
-struct Frozen {
-    below: Option<std::sync::Arc<Frozen>>,
-    start: usize,
-    nodes: Vec<Node>,
-    replaced: Vec<u32>,
-    replacements: Vec<Node>,
-}
-
-impl Frozen {
-    fn len(&self) -> usize {
-        self.start + self.nodes.len()
-    }
-
-    fn get(&self, i: usize) -> &Node {
-        let mut layer = self;
-        loop {
-            if i >= layer.start {
-                return &layer.nodes[i - layer.start];
-            }
-            match layer.replaced[i] {
-                u32::MAX => layer = layer.below.as_deref().expect("frozen id"),
-                r => return &layer.replacements[r as usize],
-            }
-        }
-    }
-}
-
-impl Css {
-    #[inline]
-    fn frozen_len(&self) -> usize {
-        self.frozen.as_ref().map_or(0, |f| f.len())
-    }
 }
 
 impl std::ops::Index<NodeId> for Css {
     type Output = Node;
     #[inline]
     fn index(&self, id: NodeId) -> &Node {
-        let i = id.0 as usize;
-        let fl = self.frozen_len();
-        if i < fl {
-            match self.copied[i] {
-                u32::MAX => self.frozen.as_ref().unwrap().get(i),
-                c => &self.copies[c as usize],
-            }
-        } else {
-            &self.nodes[i - fl]
-        }
+        &self.nodes[id.0 as usize]
     }
 }
 impl std::ops::IndexMut<NodeId> for Css {
     #[inline]
     fn index_mut(&mut self, id: NodeId) -> &mut Node {
-        let i = id.0 as usize;
-        let fl = self.frozen_len();
-        if i < fl {
-            if self.copied[i] == u32::MAX {
-                self.copied[i] = self.copies.len() as u32;
-                let n = self.frozen.as_ref().unwrap().get(i).clone();
-                self.copies.push(n);
-            }
-            &mut self.copies[self.copied[i] as usize]
-        } else {
-            &mut self.nodes[i - fl]
-        }
+        &mut self.nodes[id.0 as usize]
     }
 }
 
 impl Css {
     pub fn new() -> Css {
-        Css { nodes: Vec::with_capacity(1024), ..Default::default() }
+        Css { nodes: Vec::with_capacity(1024) }
     }
 
     pub fn add(&mut self, node: Node) -> NodeId {
         self.nodes.push(node);
-        NodeId((self.frozen_len() + self.nodes.len()) as u32 - 1)
+        NodeId(self.nodes.len() as u32 - 1)
     }
 
     pub fn len(&self) -> usize {
-        self.frozen_len() + self.nodes.len()
+        self.nodes.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Moves every node into a new frozen layer (ids stay the same), without copying.
-    pub fn freeze(&mut self) {
-        let below = self.frozen.take();
-        let start = below.as_ref().map_or(0, |f| f.len());
-        let layer = Frozen {
-            below,
-            start,
-            nodes: std::mem::take(&mut self.nodes),
-            replaced: std::mem::take(&mut self.copied),
-            replacements: std::mem::take(&mut self.copies),
-        };
-        let len = layer.len();
-        // a layer without replacements needs no lookup table below it
-        let layer = if layer.replacements.is_empty() { Frozen { replaced: vec![u32::MAX; start], ..layer } } else { layer };
-        self.frozen = Some(std::sync::Arc::new(layer));
-        self.copied = vec![u32::MAX; len];
-    }
-
-    /// Drops every tree none of whose nodes is in `refs`, renumbering the rest (relative order
-    /// kept). Returns old id → new id (`u32::MAX` for dropped nodes).
-    pub fn compact(&mut self, refs: &[NodeId]) -> Vec<u32> {
-        let len = self.len();
-        let mut keep = vec![false; len];
-        let mut stack: Vec<NodeId> = Vec::new();
-        for &r in refs {
-            let top = self.top(r);
-            if !keep[top.0 as usize] {
-                stack.push(top);
-                while let Some(n) = stack.pop() {
-                    if !keep[n.0 as usize] {
-                        keep[n.0 as usize] = true;
-                        stack.extend(self.children(n).iter().copied());
-                    }
-                }
-            }
-        }
-        let mut map = vec![u32::MAX; len];
-        let mut next = 0;
-        for (i, k) in keep.iter().enumerate() {
-            if *k {
-                map[i] = next;
-                next += 1;
-            }
-        }
-        let m = |id: NodeId| NodeId(map[id.0 as usize]);
-        let mut nodes = Vec::with_capacity(next as usize);
-        let old: Vec<Node> = if self.frozen.is_none() {
-            std::mem::take(&mut self.nodes)
-        } else {
-            (0..len).map(|i| self[NodeId(i as u32)].clone()).collect()
-        };
-        for (n, k) in old.into_iter().zip(keep) {
-            if k {
-                let mut n = n;
-                n.parent = n.parent.map(m);
-                if let Some(list) = &mut n.nodes {
-                    for c in list.iter_mut() {
-                        *c = m(*c);
-                    }
-                }
-                nodes.push(n);
-            }
-        }
-        *self = Css { nodes, ..Default::default() };
-        map
+        self.nodes.is_empty()
     }
 
     // ---- factories (`postcss.rule({...})` etc.)
@@ -625,41 +496,6 @@ impl Css {
             self[new].nodes = Some(out);
         }
         new
-    }
-
-    /// A deep copy of `other`'s node `id` (no parent) in this arena.
-    pub fn copy_from(&mut self, other: &Css, id: NodeId) -> NodeId {
-        let mut n = other[id].clone();
-        n.parent = None;
-        let children = n.nodes.take();
-        let new = self.add(n);
-        if let Some(children) = children {
-            let mut out = Vec::with_capacity(children.len());
-            for c in children {
-                let k = self.copy_from(other, c);
-                self[k].parent = Some(new);
-                out.push(k);
-            }
-            self[new].nodes = Some(out);
-        }
-        new
-    }
-
-    /// Whether two subtrees (possibly in different arenas) have the same content.
-    pub fn same_tree(&self, a: NodeId, other: &Css, b: NodeId) -> bool {
-        let (x, y) = (&self[a], &other[b]);
-        let same = x.kind == y.kind
-            && x.selector == y.selector
-            && x.name == y.name
-            && x.params == y.params
-            && x.prop == y.prop
-            && x.value == y.value
-            && x.important == y.important
-            && x.text == y.text
-            && x.source.is_some() == y.source.is_some()
-            && format!("{:?}", x.raws) == format!("{:?}", y.raws)
-            && x.nodes.as_ref().map(|v| v.len()) == y.nodes.as_ref().map(|v| v.len());
-        same && self.children(a).iter().zip(other.children(b)).all(|(&p, &q)| self.same_tree(p, other, q))
     }
 
     /// `node.clone({ nodes: [] })`
@@ -816,13 +652,6 @@ impl Css {
 
     pub fn remove_child(&mut self, container: NodeId, child: NodeId) {
         self.remove_child_ignore(container, child, false)
-    }
-
-    /// `container.removeChild(child, 'ignore')`: no `raws.before` hand-over in a root.
-    pub fn detach(&mut self, child: NodeId) {
-        if let Some(p) = self[child].parent {
-            self.remove_child_ignore(p, child, true);
-        }
     }
 
     fn remove_child_ignore(&mut self, container: NodeId, child: NodeId, ignore: bool) {

@@ -1,14 +1,14 @@
-//! Rust port of the Tailwind CSS v3.4.16 compiler, byte-identical to the Play CDN bundle
-//! (`tailwindcss` + `autoprefixer` with the bundle's baked browser data).
+//! Rust port of the Tailwind CSS v3.4.19 compiler: `postcss([tailwindcss(config),
+//! autoprefixer])` over a stylesheet, byte-identical to the npm packages (autoprefixer with the
+//! Play CDN bundle's browser data).
 //!
 //! ```no_run
 //! let config = tailwindcss_v3::Config::from_json(serde_json::json!({})).unwrap();
-//! let css = tailwindcss_v3::generate(&config, "", ["flex", "md:px-2"]).unwrap();
+//! let css = tailwindcss_v3::generate(&config, "@tailwind utilities;", ["flex", "md:px-2"]).unwrap();
 //! ```
 
 pub mod autoprefixer;
 pub mod extractor;
-mod generator;
 pub mod js;
 pub mod jsregex;
 pub mod postcss;
@@ -18,21 +18,13 @@ pub mod value_parser;
 
 use std::sync::Arc;
 
-pub use generator::{Candidates, Generator};
 pub use postcss::CssError;
-
-/// The prefix the Play bundle puts in front of the `<style type="text/tailwindcss">` blocks.
-pub const INPUT_PREFIX: &str = "@tailwind base;@tailwind components;@tailwind utilities;";
 
 /// A resolved tailwind v3 config (theme + extend, screens, darkMode, important, corePlugins,
 /// safelist, blocklist, …).
 #[derive(Clone)]
 pub struct Config {
     inner: Arc<tw::TwConfig>,
-    /// `{ config: {...} }`: tailwind then uses the inner object as the whole config, so the
-    /// bundle's own `content` (the DOM classes) is dropped and the inner `content` raw strings
-    /// are scanned with the default extractor instead.
-    content_candidates: Option<Arc<Vec<String>>>,
 }
 
 /// An error as tailwind/postcss reports it.
@@ -44,25 +36,11 @@ pub struct Error {
     pub reason: String,
     /// `error.message` exactly as JS formats it (`<css input>:1:62: …`)
     pub message: String,
-    /// Position in the whole input (`@tailwind base;@tailwind components;@tailwind utilities;` +
-    /// `blocks`), 1-based, as postcss reports it.
+    /// Position in `css`, 1-based (UTF-16 columns), as postcss reports it.
     pub line: Option<usize>,
     pub column: Option<usize>,
     pub end_line: Option<usize>,
     pub end_column: Option<usize>,
-}
-
-impl Error {
-    /// The position translated into `blocks` coordinates (line 1 loses the 53-column prefix).
-    pub fn position_in_blocks(&self) -> Option<(usize, usize)> {
-        let (l, c) = (self.line?, self.column?);
-        if l == 1 {
-            let p = INPUT_PREFIX.len();
-            if c > p { Some((1, c - p)) } else { None }
-        } else {
-            Some((l, c))
-        }
-    }
 }
 
 impl std::fmt::Display for Error {
@@ -88,74 +66,24 @@ impl From<CssError> for Error {
 }
 
 impl Config {
-    /// The `tailwind.config` object as JSON (keys in source order — `serde_json` with
-    /// `preserve_order`; integer-like keys are reordered the way JS orders them).
+    /// The tailwind config object as JSON (what `@config` points to; keys in source order —
+    /// `serde_json` with `preserve_order`; integer-like keys are reordered the way JS orders
+    /// them). Plugins, functions and regular expressions cannot be expressed in JSON.
     pub fn from_json(value: serde_json::Value) -> Result<Config, Error> {
         let user = js::Value::from_json(&value);
         if !user.is_object() && !user.is_nullish() {
-            return Err(CssError::plain("tailwind.config must be an object").into());
+            return Err(CssError::plain("tailwind config must be an object").into());
         }
-        // `tailwindcss(configOrPath)` with `{ config: … }`
-        match user.get("config") {
-            js::Value::Str(_) => {
-                // a config path: the browser build's `path` shim has no `dirname`
-                return Err(Error {
-                    name: "TypeError".into(),
-                    reason: "me.dirname is not a function".into(),
-                    message: "me.dirname is not a function".into(),
-                    line: None,
-                    column: None,
-                    end_line: None,
-                    end_column: None,
-                });
-            }
-            inner @ js::Value::Obj(_) => {
-                let resolved = tw::config::resolve_config(&inner);
-                let tw = tw::TwConfig::new(resolved);
-                let mut cands = Vec::new();
-                let extractor = extractor::Extractor::new(&tw.separator, &tw.prefix);
-                let content = inner.get("content");
-                let files = match &content {
-                    js::Value::Arr(_) => content.clone(),
-                    js::Value::Obj(_) => content.get("files"),
-                    _ => js::Value::Undefined,
-                };
-                for f in files.as_arr().unwrap_or(&[]) {
-                    if let js::Value::Str(raw) = f.get("raw") {
-                        let ext = f.get("extension");
-                        let text = if ext == js::Value::str("svelte") { svelte_transform(&raw) } else { raw.to_string() };
-                        for c in extractor.extract(&text) {
-                            cands.push(c.to_string());
-                        }
-                    }
-                }
-                if tw.separator == "-" {
-                    return Err(separator_error());
-                }
-                return Ok(Config { inner: Arc::new(tw), content_candidates: Some(Arc::new(cands)) });
-            }
-            _ => {}
-        }
-        // `{ ...window.tailwind.config, _hash, content: {...}, plugins: [...] }`
-        let mut cfg = match &user {
+        let cfg = match &user {
             js::Value::Obj(o) => (**o).clone(),
             _ => js::Object::new(),
         };
-        cfg.insert("_hash", js::Value::Num(0.0));
-        let mut content = js::Object::new();
-        content.insert("files", js::Value::from(vec![js::Value::str("/template.html")]));
-        cfg.insert("content", content.into_value());
-        let plugins = match cfg.get("plugins") {
-            Some(js::Value::Arr(a)) => js::Value::Arr(a.clone()),
-            _ => js::Value::from(Vec::<js::Value>::new()),
-        };
-        cfg.insert("plugins", plugins);
         let resolved = tw::config::resolve_config(&cfg.into_value());
         let inner = tw::TwConfig::new(resolved);
         if inner.separator == "-" {
             return Err(separator_error());
         }
-        Ok(Config { inner: Arc::new(inner), content_candidates: None })
+        Ok(Config { inner: Arc::new(inner) })
     }
 
     pub fn default_config() -> Config {
@@ -166,22 +94,28 @@ impl Config {
     pub fn resolved(&self) -> &js::Value {
         &self.inner.value
     }
+
+    /// The default extractor built for this config's `prefix` and `separator`.
+    pub fn extract_candidates<'a>(&self, source: &'a str) -> Vec<&'a str> {
+        if self.inner.prefix.is_empty() && self.inner.separator == ":" {
+            return extractor::extract_candidates(source);
+        }
+        extractor::Extractor::new(&self.inner.separator, &self.inner.prefix).extract(source)
+    }
 }
 
-/// CSS as the Play bundle produces it: `@tailwind base;@tailwind components;@tailwind
-/// utilities;` + `blocks`, tailwind over `candidates`, then autoprefixer.
+/// `postcss([tailwindcss(config), autoprefixer])` over the stylesheet `css`: `@tailwind`
+/// directives expand where they are written, `@config` rules are removed (the config is
+/// `config`), everything else goes through as tailwind and postcss leave it.
 ///
-/// Candidates are treated like the class names the bundle reads from the DOM: order and
-/// duplicates do not matter, and anything that is not a tailwind class is ignored.
-pub fn generate<'a>(config: &Config, blocks: &str, candidates: impl IntoIterator<Item = &'a str>) -> Result<String, Error> {
-    let input = format!("{INPUT_PREFIX}{blocks}");
+/// `candidates` are the class names found in the content (order and duplicates do not matter;
+/// strings that are not tailwind classes are ignored).
+pub fn generate<'a>(config: &Config, css: &str, candidates: impl IntoIterator<Item = &'a str>) -> Result<String, Error> {
     let cfg = &*config.inner;
     let mut ctx = tw::context::Context::new(cfg);
-    let root = postcss::parse(&mut ctx.css, &input)?;
-    match &config.content_candidates {
-        Some(c) => tw::process::process_tailwind_features(&mut ctx, root, c.iter().map(|s| s.as_str()))?,
-        None => tw::process::process_tailwind_features(&mut ctx, root, candidates)?,
-    }
+    let root = postcss::parse(&mut ctx.css, css)?;
+    tw::process::remove_config_at_rules(&mut ctx, root)?;
+    tw::process::process_tailwind_features(&mut ctx, root, candidates)?;
     autoprefixer::autoprefix(&mut ctx.css, root)?;
     Ok(postcss::to_string(&mut ctx.css, root))
 }
@@ -192,41 +126,9 @@ pub fn extract_candidates(source: &str) -> Vec<&str> {
     extractor::extract_candidates(source)
 }
 
-impl Config {
-    /// The default extractor built for this config's `prefix` and `separator`.
-    pub fn extract_candidates<'a>(&self, source: &'a str) -> Vec<&'a str> {
-        if self.inner.prefix.is_empty() && self.inner.separator == ":" {
-            return extractor::extract_candidates(source);
-        }
-        extractor::Extractor::new(&self.inner.separator, &self.inner.prefix).extract(source)
-    }
-}
-
 fn separator_error() -> Error {
     CssError::plain(
         "The '-' character cannot be used as a custom separator in JIT mode due to parsing ambiguity. Please use another character like '_' instead.",
     )
     .into()
-}
-
-/// `builtInTransformers.svelte`: `content.replace(/(?:^|\s)class:/g, ' ')`
-fn svelte_transform(s: &str) -> String {
-    let mut out = String::new();
-    let mut rest = s;
-    let mut at_start = true;
-    while let Some(i) = rest.find("class:") {
-        let before = &rest[..i];
-        let prev = before.chars().last();
-        if (i == 0 && at_start) || prev.is_some_and(js::is_js_whitespace) {
-            let cut = if i == 0 { 0 } else { i - prev.unwrap().len_utf8() };
-            out.push_str(&rest[..cut]);
-            out.push(' ');
-        } else {
-            out.push_str(&rest[..i + "class:".len()]);
-        }
-        rest = &rest[i + "class:".len()..];
-        at_start = false;
-    }
-    out.push_str(rest);
-    out
 }

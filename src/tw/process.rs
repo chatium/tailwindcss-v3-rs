@@ -187,11 +187,8 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
     let mut variant_list: Vec<String> = Vec::new();
     {
         let mut api = PluginApi { ctx, variant_list: &mut variant_list };
-        // every plugin call gets an id (for `Generator::derive`)
         fn run(api: &mut PluginApi, plugin: impl FnOnce(&mut PluginApi) -> std::result::Result<(), String>) -> Result<()> {
-            plugin(api).map_err(plain)?;
-            api.ctx.current_plugin += 1;
-            Ok(())
+            plugin(api).map_err(plain)
         }
         for (name, plugin) in cp::core_plugins() {
             if cfg.core_plugins.iter().any(|p| p == name) {
@@ -233,7 +230,6 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
         for p in after {
             run(&mut api, p)?;
         }
-        api.ctx.layer_identifiers.get_or_insert_with(Vec::new);
         for lp in layer_plugins {
             match lp {
                 LayerPlugin::Base(n) => api.add_base(vec![Style::Node(n)]).map_err(plain)?,
@@ -242,12 +238,6 @@ pub fn create_context<'c>(cfg: &'c TwConfig, ctx: &mut Context<'c>, root: NodeId
             }
         }
     }
-    let ids = ctx.layer_identifiers.take();
-    ctx.layer_identifiers = ids.map(|mut v| {
-        v.sort();
-        v.dedup();
-        v
-    });
     ctx.finish_variants(&variant_list);
 
     // safelist
@@ -291,9 +281,9 @@ fn clone_nodes(ctx: &mut Context, nodes: &[NodeId], source: Option<Source>, laye
     out
 }
 
-/// Candidates the way the Play bundle sees them: the class list joined with spaces, then
-/// the `html` extractor (`split(' ')`) per trimmed line, deduplicated, plus the non-on-demand
-/// key, sorted like JS strings.
+/// `getClassCandidates` over the candidates as one raw content string (joined with spaces,
+/// split on spaces per trimmed line), deduplicated, plus the non-on-demand key, sorted like JS
+/// strings. Candidates without whitespace come out as they are.
 pub fn candidates_from_tokens<'a>(tokens: impl IntoIterator<Item = &'a str>, safelist: &[String]) -> Vec<String> {
     let not_on_demand = super::context::NOT_ON_DEMAND;
     let mut set: Vec<String> = vec![not_on_demand.to_string()];
@@ -387,10 +377,7 @@ pub fn expand_tailwind_at_rules(ctx: &mut Context, root: NodeId, candidates: &[S
     ctx.generate_rules(candidates).map_err(plain)?;
 
     // buildStylesheet
-    let sorted = match ctx.sorted_rules.take() {
-        Some((n, sorted)) if n == ctx.rule_cache.len() => sorted,
-        _ => sorted_rules(ctx),
-    };
+    let sorted = sorted_rules(ctx);
     let mut layers: [Vec<NodeId>; 5] = Default::default(); // base, defaults, components, utilities, variants
     let mut seen: [crate::js::FxHashSet<NodeId>; 5] = Default::default();
     for &(layer, rule) in sorted.iter() {
@@ -820,6 +807,40 @@ pub fn collapse_duplicate_declarations(ctx: &mut Context, root: NodeId) {
 
 pub fn _unused(_: Arc<()>, _: SFlow) {}
 
+/// `findAtConfigPath(root, result)`: the `@config` rules go (the caller resolves the config); the
+/// checks that need no file system stay.
+pub fn remove_config_at_rules(ctx: &mut Context, root: NodeId) -> Result<()> {
+    let mut seen = false;
+    let mut err = None;
+    ctx.css.walk_at_rules_named(root, "config", &mut |css, rule| {
+        if seen {
+            err = Some(css.error(rule, "Only one `@config` directive is allowed per file."));
+            return Flow::Stop;
+        }
+        // rule.params.match(/(['"])(.*?)\1/)
+        let params = css[rule].params.clone();
+        let path = params.char_indices().filter(|(_, c)| *c == '\'' || *c == '"').find_map(|(i, q)| {
+            let rest = &params[i + 1..];
+            rest.find(q).map(|j| rest[..j].to_string())
+        });
+        let Some(path) = path else {
+            err = Some(css.error(rule, "A path is required when using the `@config` directive."));
+            return Flow::Stop;
+        };
+        if path.starts_with('/') {
+            err = Some(css.error(rule, "The `@config` directive cannot be used with an absolute path."));
+            return Flow::Stop;
+        }
+        seen = true;
+        css.remove(rule);
+        Flow::Continue
+    });
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// `processTailwindFeatures(setupContext)(root, result)`
 pub fn process_tailwind_features<'a, 'c>(
     ctx: &mut Context<'c>,
@@ -841,14 +862,6 @@ pub fn prepare(ctx: &mut Context, root: NodeId) -> Result<()> {
     create_context(cfg, ctx, root)
 }
 
-/// `prepare` for a clone of a context that went through it without `@layer` rules: false when
-/// the input has `@layer` rules (the clone is then unusable).
-pub fn prepare_without_layers(ctx: &mut Context, root: NodeId) -> Result<bool> {
-    normalize_tailwind_directives(ctx, root)?;
-    partition_apply_at_rules(ctx, root);
-    Ok(collect_layer_plugins(ctx, root).is_empty())
-}
-
 /// The rest of `processTailwindFeatures` over the candidate list of `candidates_from_tokens`.
 pub fn finish(ctx: &mut Context, root: NodeId, candidates: &[String]) -> Result<()> {
     expand_tailwind_at_rules(ctx, root, candidates)?;
@@ -860,27 +873,6 @@ pub fn finish(ctx: &mut Context, root: NodeId, candidates: &[String]) -> Result<
     collapse_adjacent_rules(ctx, root);
     collapse_duplicate_declarations(ctx, root);
     Ok(())
-}
-
-/// `candidates_from_tokens` for tokens that already went through it (distinct, no whitespace
-/// splitting left to do) plus the safelist.
-pub fn merge_candidates(tokens: Vec<&str>, safelist: &[String]) -> Vec<String> {
-    let mut set: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
-    if !safelist.is_empty() {
-        let mut seen: crate::js::FxHashSet<&str> = tokens.iter().copied().collect();
-        for c in safelist {
-            for line in c.split('\n') {
-                for tok in crate::js::trim(line).split(' ') {
-                    if tok != "!*" && seen.insert(tok) {
-                        set.push(tok.to_string());
-                    }
-                }
-            }
-        }
-    }
-    set.push(super::context::NOT_ON_DEMAND.to_string());
-    set.sort_by(|a, b| crate::js::cmp_utf16(sort_key(a), sort_key(b)));
-    set
 }
 
 /// The String object compares as '*' and is never equal to the primitive.

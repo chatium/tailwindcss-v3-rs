@@ -216,15 +216,6 @@ pub struct VariantEntry {
     pub container: Option<NodeId>,
 }
 
-/// A config read a plugin made while registering (for `Generator::derive`).
-#[derive(Clone, Debug)]
-pub struct ConfigRead {
-    pub plugin: u32,
-    pub path: String,
-    pub value: Value,
-    pub values_only: bool,
-}
-
 #[derive(Clone)]
 pub struct Context<'c> {
     pub css: Css,
@@ -247,12 +238,6 @@ pub struct Context<'c> {
     pub layer_identifiers: Option<Vec<String>>,
     /// `unitCache` of the screen variants
     pub screen_units: HashSet<String>,
-    /// registration bookkeeping for `Generator::derive`: the plugin being registered, its config
-    /// reads, which plugin pushed each candidate rule map entry, plugins that added variants
-    pub current_plugin: u32,
-    pub reads: Vec<ConfigRead>,
-    pub rule_plugins: HashMap<String, Vec<u32>>,
-    pub variant_plugins: Vec<u32>,
     /// `buildStylesheet`'s sorted rule cache (layers only), valid while the rule cache has this
     /// many entries
     pub sorted_rules: Option<(usize, Arc<Vec<(super::offsets::Layer, NodeId)>>)>,
@@ -306,58 +291,7 @@ impl<'c> Context<'c> {
             errors: Vec::new(),
             layer_identifiers: None,
             screen_units: HashSet::default(),
-            current_plugin: 0,
-            reads: Vec::new(),
-            rule_plugins: HashMap::default(),
-            variant_plugins: Vec::new(),
             sorted_rules: None,
-        }
-    }
-
-    /// Drops the nodes nothing in the context refers to (`Css::compact`).
-    pub fn compact_nodes(&mut self) {
-        let mut refs: Vec<NodeId> = Vec::new();
-        refs.extend(self.rule_cache.iter().flatten().map(|(_, n)| *n));
-        for v in self.candidate_rule_map.values() {
-            refs.extend(v.iter().filter_map(|(_, r)| if let PluginRule::Static(n) = r { Some(*n) } else { None }));
-        }
-        for v in self.class_cache.values().chain(self.apply_class_cache.values()) {
-            refs.extend(v.iter().map(|(_, n)| *n));
-        }
-        for v in self.variant_map.values() {
-            refs.extend(v.iter().filter_map(|e| e.container));
-        }
-        if let Some((_, s)) = &self.sorted_rules {
-            refs.extend(s.iter().map(|(_, n)| *n));
-        }
-        let map = self.css.compact(&refs);
-        let m = |n: &mut NodeId| *n = NodeId(map[n.0 as usize]);
-        for e in Arc::make_mut(&mut self.rule_cache).iter_mut().flatten() {
-            m(&mut e.1);
-        }
-        for v in Arc::make_mut(&mut self.candidate_rule_map).values_mut() {
-            for (_, r) in v.iter_mut() {
-                if let PluginRule::Static(n) = r {
-                    m(n);
-                }
-            }
-        }
-        for v in Arc::make_mut(&mut self.class_cache).values_mut().chain(self.apply_class_cache.values_mut()) {
-            for (_, n) in v.iter_mut() {
-                m(n);
-            }
-        }
-        for v in Arc::make_mut(&mut self.variant_map).values_mut() {
-            for e in v.iter_mut() {
-                if let Some(n) = &mut e.container {
-                    m(n);
-                }
-            }
-        }
-        if let Some((_, s)) = &mut self.sorted_rules {
-            for (_, n) in Arc::make_mut(s).iter_mut() {
-                m(n);
-            }
         }
     }
 
@@ -366,10 +300,6 @@ impl<'c> Context<'c> {
     }
 
     pub fn push_rule(&mut self, identifier: String, meta: Meta, rule: PluginRule) {
-        if let Some(ids) = &mut self.layer_identifiers {
-            ids.push(identifier.clone());
-        }
-        self.rule_plugins.entry(identifier.clone()).or_default().push(self.current_plugin);
         Arc::make_mut(&mut self.candidate_rule_map).entry(identifier).or_default().push((meta, rule));
     }
 }
@@ -439,61 +369,33 @@ fn with_identifiers(css: &mut Css, styles: Vec<Style>) -> Result<Vec<(String, No
 }
 
 impl<'a, 'c> PluginApi<'a, 'c> {
-    fn record(&mut self, path: String, value: &Value, values_only: bool) {
-        let plugin = self.ctx.current_plugin;
-        self.ctx.reads.push(ConfigRead { plugin, path, value: value.clone(), values_only });
-    }
-
     /// `flagEnabled(config, flag)`
-    pub fn flag(&mut self, name: &str) -> bool {
-        let on = super::config::flag_enabled(&self.ctx.cfg.value, name);
-        self.record(format!("flag:{name}"), &Value::Bool(on), false);
-        on
+    pub fn flag(&self, name: &str) -> bool {
+        super::config::flag_enabled(&self.ctx.cfg.value, name)
     }
 
     /// `config(path, default)` with a dotted path
-    pub fn config(&mut self, path: &str) -> Value {
+    pub fn config(&self, path: &str) -> Value {
         let parts: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
-        let v = dlv(&self.ctx.cfg.value, &parts, Value::Undefined);
-        self.record(format!("config:{path}"), &v, false);
-        v
-    }
-
-    fn theme_impl(&mut self, path: &str, default: Value, values_only: bool) -> Value {
-        let parts = to_path(path).unwrap_or_default();
-        let mut full = vec!["theme".to_string()];
-        full.extend(parts.iter().cloned());
-        let value = dlv(&self.ctx.cfg.value, &full, default.clone());
-        let v = transform_theme_value(parts.first().map(|s| s.as_str()).unwrap_or(""), value, &Object::new().into_value());
-        // the default is part of the call: two reads agree only if both agree
-        let mut key = format!("theme:{path}");
-        if !default.is_undefined() {
-            key.push_str(&format!("|{}", default.to_js_string()));
-        }
-        self.record(key, &v, values_only);
-        v
+        dlv(&self.ctx.cfg.value, &parts, Value::Undefined)
     }
 
     /// `theme(path, defaultValue)`
-    pub fn theme_or(&mut self, path: &str, default: Value) -> Value {
-        self.theme_impl(path, default, false)
+    pub fn theme_or(&self, path: &str, default: Value) -> Value {
+        let parts = to_path(path).unwrap_or_default();
+        let mut full = vec!["theme".to_string()];
+        full.extend(parts.iter().cloned());
+        let value = dlv(&self.ctx.cfg.value, &full, default);
+        transform_theme_value(parts.first().map(|s| s.as_str()).unwrap_or(""), value, &Object::new().into_value())
     }
 
-    pub fn theme(&mut self, path: &str) -> Value {
-        self.theme_impl(path, Value::Undefined, false)
-    }
-
-    /// `theme(path)` whose result only becomes `values`/`modifiers` of `matchUtilities` (a
-    /// derived generator compares those per looked-up key instead of as a whole)
-    pub fn theme_values(&mut self, path: &str) -> Value {
-        self.theme_impl(path, Value::Undefined, true)
+    pub fn theme(&self, path: &str) -> Value {
+        self.theme_or(path, Value::Undefined)
     }
 
     /// `corePlugins(name)`
-    pub fn core_plugins(&mut self, name: &str) -> bool {
-        let on = self.ctx.cfg.core_plugins.iter().any(|p| p == name);
-        self.record(format!("corePlugins:{name}"), &Value::Bool(on), false);
-        on
+    pub fn core_plugins(&self, name: &str) -> bool {
+        self.ctx.cfg.core_plugins.iter().any(|p| p == name)
     }
 
     /// `prefix(selector)`
@@ -677,10 +579,6 @@ impl<'a, 'c> PluginApi<'a, 'c> {
             .into_iter()
             .map(|f| VariantEntry { sort: self.ctx.offsets.create(Layer::Variants), f, container: None })
             .collect();
-        let id = self.ctx.current_plugin;
-        if self.ctx.variant_plugins.last() != Some(&id) {
-            self.ctx.variant_plugins.push(id);
-        }
         Arc::make_mut(&mut self.ctx.variant_map).insert(name.to_string(), entries);
         Arc::make_mut(&mut self.ctx.variant_options).insert(name.to_string(), options);
         Ok(())

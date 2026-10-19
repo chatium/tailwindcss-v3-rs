@@ -1,4 +1,4 @@
-//! Port of `postcss-selector-parser@6.1.2` (the version inside the Play bundle).
+//! Port of `postcss-selector-parser@6.1.2`.
 //!
 //! Nodes live in an arena ([`Sel`]). As in JS, container mutation does not detach a node
 //! from its previous parent and assigning `nodes` does not update `parent`, so the same
