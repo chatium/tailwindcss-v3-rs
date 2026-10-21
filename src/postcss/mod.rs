@@ -9,7 +9,7 @@
 mod list;
 mod parser;
 mod stringify;
-mod tokenize;
+pub mod tokenize;
 
 pub use list::{comma, space, split};
 pub use parser::parse;

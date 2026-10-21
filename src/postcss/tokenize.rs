@@ -40,6 +40,8 @@ impl Token {
 pub struct Tokenizer<'a> {
     css: &'a str,
     bytes: &'a [u8],
+    /// `options.ignoreErrors`
+    ignore: bool,
     pos: usize,
     buffer: Vec<Token>,
     returned: Vec<Token>,
@@ -55,7 +57,13 @@ fn is_word_end(c: u8) -> bool {
 
 impl<'a> Tokenizer<'a> {
     pub fn new(css: &'a str) -> Self {
-        Tokenizer { css, bytes: css.as_bytes(), pos: 0, buffer: Vec::new(), returned: Vec::new() }
+        Tokenizer { css, bytes: css.as_bytes(), ignore: false, pos: 0, buffer: Vec::new(), returned: Vec::new() }
+    }
+
+    /// `tokenizer(input, { ignoreErrors: true })`: an unclosed string, comment or `url(` is a token, not an
+    /// error, so `next_token` never fails.
+    pub fn ignoring_errors(css: &'a str) -> Self {
+        Tokenizer { ignore: true, ..Tokenizer::new(css) }
     }
 
     pub fn position(&self) -> usize {
@@ -127,6 +135,10 @@ impl<'a> Tokenizer<'a> {
                         let mut escaped = false;
                         match self.css[next + 1..].find(')') {
                             Some(i) => next = next + 1 + i,
+                            None if self.ignore => {
+                                next = pos;
+                                break;
+                            }
                             None => return Err(self.unclosed(input, "bracket")),
                         }
                         let mut escape_pos = next;
@@ -166,6 +178,11 @@ impl<'a> Tokenizer<'a> {
                     let mut escaped = false;
                     match self.css[next + 1..].find(quote) {
                         Some(i) => next = next + 1 + i,
+                        None if self.ignore => {
+                            // `next = pos + 1`: the quote and the character after it, whole
+                            next = pos + self.css[pos + 1..].chars().next().map_or(0, char::len_utf8);
+                            break;
+                        }
                         None => return Err(self.unclosed(input, "string")),
                     }
                     let mut escape_pos = next;
@@ -223,9 +240,11 @@ impl<'a> Tokenizer<'a> {
                 if code == b'/' && self.code(pos + 1) == Some(b'*') {
                     let next = match self.css[pos + 2..].find("*/") {
                         Some(i) => pos + 2 + i + 1,
+                        None if self.ignore => len,
                         None => return Err(self.unclosed(input, "comment")),
                     };
-                    tok = Token { kind: T::Comment, start: pos, end: next + 1, pos: Some(pos), end_pos: Some(next) };
+                    // an unclosed one runs to the end: `css.slice(pos, next + 1)` clamps
+                    tok = Token { kind: T::Comment, start: pos, end: (next + 1).min(len), pos: Some(pos), end_pos: Some(next) };
                     self.pos = next;
                 } else {
                     let mut next = len - 1;

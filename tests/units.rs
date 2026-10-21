@@ -105,6 +105,43 @@ fn postcss_roundtrip() {
     report("postcss", cases.len(), failed);
 }
 
+/// `tokenizer(input, { ignoreErrors: true })`: types and texts of every token.
+#[test]
+fn postcss_tokenize_ignoring_errors() {
+    use postcss::tokenize::{T, Tokenizer};
+    let cases = load("tokenize");
+    let mut failed = Vec::new();
+    for c in &cases {
+        let input = c["input"].as_str().unwrap();
+        let source = postcss::Input::new(input);
+        let mut tokenizer = Tokenizer::ignoring_errors(input);
+        let mut tokens = Vec::new();
+        while let Some(token) = tokenizer.next_token(&source).unwrap() {
+            let kind = match token.kind {
+                T::Space => "space",
+                T::Word => "word",
+                T::String => "string",
+                T::AtWord => "at-word",
+                T::Brackets => "brackets",
+                T::Comment => "comment",
+                T::OpenParen => "(",
+                T::CloseParen => ")",
+                T::OpenSquare => "[",
+                T::CloseSquare => "]",
+                T::OpenCurly => "{",
+                T::CloseCurly => "}",
+                T::Colon => ":",
+                T::Semicolon => ";",
+            };
+            tokens.push(serde_json::json!([kind, token.text(input)]));
+        }
+        if Value::Array(tokens.clone()) != c["tokens"] {
+            failed.push(format!("{input:?}\n got {}\nwant {}", Value::Array(tokens), c["tokens"]));
+        }
+    }
+    report("tokenize", cases.len(), failed);
+}
+
 fn to_json(v: &tailwindcss_v3::js::Value) -> Value {
     use tailwindcss_v3::js::Value as V;
     match v {

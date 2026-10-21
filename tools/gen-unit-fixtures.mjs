@@ -91,3 +91,31 @@ const rcOut = configs.map(c => {
 })
 fs.writeFileSync('../tests/fixtures/resolve-config.json', JSON.stringify(rcOut))
 console.log('resolve-config', rcOut.length)
+
+// ---- tokenizer with ignoreErrors: the postcss corpus, cut right after its first quote, comment and `url(`
+// (unclosed), and hand-written broken inputs
+const tokenize = require('postcss/lib/tokenize')
+const Input = require('postcss/lib/input')
+const tokInputs = new Set()
+for (const input of cssInputs) {
+  tokInputs.add(input)
+  for (const open of ['"', "'", '/*', 'url(']) {
+    const at = input.indexOf(open)
+    if (at >= 0) tokInputs.add(input.slice(0, at + open.length) + input.slice(at + open.length).replace(/["'*)]/g, ''))
+  }
+}
+for (const s of [
+  '"', "'", '/*', 'url(', 'url(x', 'url( x', "a { b: url('x", 'a { content: "x', "a { content: 'x\\' }", '"\\', "'é",
+  '"é', 'a /* x', '/* @tailwind', '/* docs @tailwind */\na {color: red;', '@tailwind base; a { b: c',
+  "a::after { content: '@tailwind utilities; }", '/* x */ @tailwind utilities; a { b: "c', 'a { b: (c',
+])
+  tokInputs.add(s)
+const tokOut = []
+for (const input of tokInputs) {
+  const t = tokenize(new Input(input), { ignoreErrors: true })
+  const tokens = []
+  while (!t.endOfFile()) tokens.push(t.nextToken().slice(0, 2))
+  tokOut.push({ input, tokens })
+}
+fs.writeFileSync('../tests/fixtures/tokenize.json', JSON.stringify(tokOut))
+console.log('tokenize', tokOut.length)

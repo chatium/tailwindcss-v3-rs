@@ -11,7 +11,7 @@ fn fixture_names() -> Vec<String> {
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".json") && !matches!(n.as_str(), "selector.json" | "postcss.json" | "resolve-config.json"))
+        .filter(|n| n.ends_with(".json") && !matches!(n.as_str(), "selector.json" | "postcss.json" | "resolve-config.json" | "tokenize.json"))
         .map(|n| n.trim_end_matches(".json").to_string())
         .collect();
     names.sort();
