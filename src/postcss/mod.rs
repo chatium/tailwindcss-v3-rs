@@ -116,6 +116,9 @@ pub struct Source {
 pub struct Input {
     pub css: String,
     line_starts: Vec<usize>,
+    /// For a non-ASCII input, the UTF-16 units before each byte offset (a split character counts one, as
+    /// `from_utf8_lossy` reads it): a column on a long minified line costs no scan from the line start.
+    utf16: Option<Vec<u32>>,
 }
 
 impl Input {
@@ -127,7 +130,18 @@ impl Input {
                 line_starts.push(i + 1);
             }
         }
-        Arc::new(Input { css: css.to_string(), line_starts })
+        let utf16 = (!css.is_ascii()).then(|| {
+            let mut units = Vec::with_capacity(css.len() + 1);
+            let mut before = 0;
+            for ch in css.chars() {
+                units.push(before);
+                units.extend(std::iter::repeat_n(before + 1, ch.len_utf8() - 1));
+                before += ch.len_utf16() as u32;
+            }
+            units.push(before);
+            units
+        });
+        Arc::new(Input { css: css.to_string(), line_starts, utf16 })
     }
 
     /// line/column (1-based, UTF-16 columns) for a byte offset
@@ -138,10 +152,10 @@ impl Input {
         };
         let start = self.line_starts[line];
         let end = offset.min(self.css.len());
-        let col = if start <= end {
-            utf16_units(&self.css.as_bytes()[start..end]) + 1
-        } else {
-            1
+        let col = match &self.utf16 {
+            _ if start > end => 1,
+            Some(units) => (units[end] - units[start]) as usize + 1,
+            None => end - start + 1,
         };
         (line + 1, col)
     }
@@ -149,13 +163,6 @@ impl Input {
     pub fn position(&self, offset: usize) -> Position {
         let (line, column) = self.from_offset(offset);
         Position { line, column, offset }
-    }
-}
-
-fn utf16_units(bytes: &[u8]) -> usize {
-    match std::str::from_utf8(bytes) {
-        Ok(s) => s.encode_utf16().count(),
-        Err(_) => String::from_utf8_lossy(bytes).encode_utf16().count(),
     }
 }
 
@@ -875,5 +882,36 @@ pub(crate) trait CharExt {
 impl CharExt for char {
     fn is_whitespace_js(&self) -> bool {
         crate::js::is_js_whitespace(*self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Input;
+
+    /// What `from_offset` counted before its table: the UTF-16 units of the line up to the offset.
+    fn scanned(input: &Input, offset: usize) -> (usize, usize) {
+        let end = offset.min(input.css.len());
+        let line = input.css.as_bytes()[..end].iter().filter(|&&b| b == b'\n').count();
+        let start = input.line_starts[line];
+        let units = String::from_utf8_lossy(&input.css.as_bytes()[start..end]).encode_utf16().count();
+        (line + 1, units + 1)
+    }
+
+    #[test]
+    fn columns_are_utf16_units_from_the_line_start() {
+        let inputs = ["a{b:c}\nd{}", "a{content:\"Привет\"}\n.б{c:d}", "a{content:\"😀x😀\"}\r\n😀{}", "\u{feff}ж{}", "€\n\n😀"];
+        for css in inputs {
+            let input = Input::new(css);
+            for offset in 0..=input.css.len() + 2 {
+                assert_eq!(input.from_offset(offset), scanned(&input, offset), "{css:?} at {offset}");
+            }
+        }
+        let input = Input::new("Ж😀b\nж😀");
+        assert_eq!(input.from_offset(6), (1, 4));
+        assert_eq!(input.from_offset(10), (2, 2));
+        assert_eq!(input.from_offset(14), (2, 4));
+        // A split character counts one unit, as a lossy read of the bytes up to it.
+        assert_eq!(input.from_offset(3), (1, 3));
     }
 }
